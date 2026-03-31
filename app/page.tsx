@@ -2,7 +2,28 @@
 
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info } from 'lucide-react';
+import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info, Download } from 'lucide-react';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 type Outcome = 'RED' | 'BLACK' | 'ZERO';
 
@@ -22,6 +43,17 @@ interface SavedSession {
   durationMs: number;
   zeroCount: number;
   roi: number;
+}
+
+interface SessionLogEntry {
+  timestamp: number;
+  input_result: Outcome;
+  recommended_action: Outcome | 'WAIT';
+  current_bet: number;
+  current_step: number;
+  current_balance: number;
+  server_state_detected: string;
+  time_since_last_spin: number;
 }
 
 // Audio Engine
@@ -145,6 +177,7 @@ export default function MatreshkaQuantum() {
   const [manualColor, setManualColor] = useState<Outcome | null>(null);
   const [isEditingBet, setIsEditingBet] = useState(false);
   const [editBetValue, setEditBetValue] = useState('');
+  const [sessionLogs, setSessionLogs] = useState<SessionLogEntry[]>([]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -408,6 +441,20 @@ export default function MatreshkaQuantum() {
   const durationMs = now - sessionStartTime;
   const profitPerHour = durationMs > 0 ? (profit / (durationMs / 3600000)) : 0;
 
+  let maxDrawdown = 0;
+  let peak = initialBankroll;
+  let currentBankrollCalc = initialBankroll;
+  for (const h of history) {
+    currentBankrollCalc += h.netProfit;
+    if (currentBankrollCalc > peak) {
+      peak = currentBankrollCalc;
+    }
+    const drawdown = peak - currentBankrollCalc;
+    if (drawdown > maxDrawdown) {
+      maxDrawdown = drawdown;
+    }
+  }
+
   const redCount = history.filter(h => h.outcome === 'RED').length;
   const blackCount = history.filter(h => h.outcome === 'BLACK').length;
   const zeroCount = history.filter(h => h.outcome === 'ZERO').length;
@@ -415,6 +462,54 @@ export default function MatreshkaQuantum() {
   const redPct = totalSpins > 0 ? Math.round((redCount / totalSpins) * 100) : 0;
   const blackPct = totalSpins > 0 ? Math.round((blackCount / totalSpins) * 100) : 0;
   const zeroPct = totalSpins > 0 ? Math.round((zeroCount / totalSpins) * 100) : 0;
+
+  // Deep Stats
+  let totalStreaks = 0;
+  let totalStreakLength = 0;
+  let colorChanges = 0;
+  let zeroIntervals = [];
+  let lastZeroIndex = -1;
+
+  let currentStreakLen = 0;
+  let currentStreakCol = null;
+
+  for (let i = 0; i < history.length; i++) {
+    const h = history[i];
+    
+    if (h.outcome === 'ZERO') {
+      if (lastZeroIndex !== -1) {
+        zeroIntervals.push(i - lastZeroIndex);
+      }
+      lastZeroIndex = i;
+      
+      if (currentStreakLen > 0) {
+        totalStreaks++;
+        totalStreakLength += currentStreakLen;
+      }
+      currentStreakLen = 0;
+      currentStreakCol = null;
+    } else {
+      if (h.outcome === currentStreakCol) {
+        currentStreakLen++;
+      } else {
+        if (currentStreakLen > 0) {
+          totalStreaks++;
+          totalStreakLength += currentStreakLen;
+          colorChanges++;
+        }
+        currentStreakCol = h.outcome;
+        currentStreakLen = 1;
+      }
+    }
+  }
+  if (currentStreakLen > 0) {
+    totalStreaks++;
+    totalStreakLength += currentStreakLen;
+  }
+
+  const avgStreakLength = totalStreaks > 0 ? (totalStreakLength / totalStreaks).toFixed(2) : '0.00';
+  const zebraRatio = totalSpins > 1 ? Math.round((colorChanges / (totalSpins - 1)) * 100) : 0;
+  const avgZeroFrequency = zeroIntervals.length > 0 ? (zeroIntervals.reduce((a, b) => a + b, 0) / zeroIntervals.length).toFixed(1) : 'N/A';
 
   let currentStreakColorHUD = null;
   let currentStreakLengthHUD = 0;
@@ -535,6 +630,21 @@ export default function MatreshkaQuantum() {
     setCurrentStep(nextStep);
     setAttackStep(nextAttackStep);
 
+    const nowMs = new Date().getTime();
+    const timeSinceLast = sessionLogs.length > 0 ? nowMs - sessionLogs[sessionLogs.length - 1].timestamp : 0;
+    
+    const newLogEntry: SessionLogEntry = {
+      timestamp: nowMs,
+      input_result: outcome,
+      recommended_action: recommendation,
+      current_bet: recommendation !== 'WAIT' ? nextBet : 0,
+      current_step: currentStep,
+      current_balance: currentBankroll,
+      server_state_detected: serverPhase,
+      time_since_last_spin: timeSinceLast
+    };
+    setSessionLogs([...sessionLogs, newLogEntry]);
+
     if (nextStep === 5) playHum();
     if (nextStep >= 4) playAlert();
 
@@ -553,6 +663,10 @@ export default function MatreshkaQuantum() {
     const newHistory = [...history];
     newHistory.pop();
     setHistory(newHistory);
+
+    const newSessionLogs = [...sessionLogs];
+    newSessionLogs.pop();
+    setSessionLogs(newSessionLogs);
 
     let step = 1;
     let aStep = 0;
@@ -608,6 +722,79 @@ export default function MatreshkaQuantum() {
       setManualBet(null);
       setManualColor(null);
       setIsEditingBet(false);
+  };
+
+  const exportSessionLogs = () => {
+    const exportData = {
+      metadata: {
+        date: new Date(sessionStartTime).toISOString(),
+        totalProfit: profit,
+        maxDrawdown: maxDrawdown,
+        durationMs: durationMs,
+      },
+      logs: sessionLogs
+    };
+    
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `matreshka_session_${new Date(sessionStartTime).toISOString().split('T')[0]}.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const chartData = {
+    labels: sessionLogs.map((_, index) => index + 1),
+    datasets: [
+      {
+        label: 'Баланс',
+        data: sessionLogs.map(log => log.current_balance),
+        borderColor: 'rgb(16, 185, 129)',
+        backgroundColor: 'rgba(16, 185, 129, 0.5)',
+        pointRadius: sessionLogs.map(log => log.input_result === 'ZERO' ? 5 : 0),
+        pointBackgroundColor: sessionLogs.map(log => log.input_result === 'ZERO' ? 'rgb(59, 130, 246)' : 'transparent'),
+        pointBorderColor: sessionLogs.map(log => log.input_result === 'ZERO' ? 'rgb(59, 130, 246)' : 'transparent'),
+        tension: 0.1,
+      },
+    ],
+  };
+
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        display: false,
+      },
+      tooltip: {
+        callbacks: {
+          label: function(context: any) {
+            let label = context.dataset.label || '';
+            if (label) {
+              label += ': ';
+            }
+            if (context.parsed.y !== null) {
+              label += new Intl.NumberFormat('ru-RU').format(context.parsed.y) + ' ₽';
+            }
+            return label;
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        display: false,
+      },
+      y: {
+        grid: {
+          color: 'rgba(255, 255, 255, 0.1)',
+        },
+        ticks: {
+          color: 'rgba(255, 255, 255, 0.5)',
+        }
+      }
+    }
   };
 
   return (
@@ -838,6 +1025,41 @@ export default function MatreshkaQuantum() {
               <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Макс. серия</div>
               <div className="text-xs font-mono font-bold text-white">{maxStreak}</div>
             </div>
+          </div>
+        </div>
+
+        {/* Deep Stats */}
+        <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 space-y-4">
+          <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Глубокая статистика</div>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Ср. длина серии</div>
+              <div className="text-xs font-mono font-bold text-white">{avgStreakLength}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Коэф. Зебры</div>
+              <div className="text-xs font-mono font-bold text-white">{zebraRatio}%</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Частота Зеро</div>
+              <div className="text-xs font-mono font-bold text-white">{avgZeroFrequency}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Chart */}
+        <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5">
+          <div className="flex justify-between items-center mb-4">
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">График баланса</div>
+            <button
+              onClick={exportSessionLogs}
+              className="flex items-center gap-1 text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-gray-800 text-gray-300 hover:text-white transition-colors"
+            >
+              <Download size={12} /> Экспорт логов
+            </button>
+          </div>
+          <div className="h-40 w-full">
+            <Line data={chartData} options={chartOptions as any} />
           </div>
         </div>
 
