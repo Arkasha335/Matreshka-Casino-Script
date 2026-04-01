@@ -90,6 +90,7 @@ const playTone = (freq: number, type: OscillatorType, duration: number, vol: num
 };
 
 const playClick = () => playTone(800, 'sine', 0.1, 0.05);
+const playHapticClick = () => playTone(150, 'square', 0.05, 0.1);
 const playHum = () => playTone(60, 'sawtooth', 1.0, 0.1);
 const playAlert = () => {
   playTone(880, 'square', 0.2, 0.05);
@@ -115,6 +116,38 @@ const calculateS = (hist: HistoryEntry[]) => {
   const last20 = streakLengths.slice(-20);
   const spinsInStreaks = last20.filter(len => len > 3).length;
   return spinsInStreaks / 20;
+};
+
+const calculateStability = (hist: HistoryEntry[]) => {
+  if (hist.length < 15) return 0.5;
+  const last15 = hist.slice(-15);
+  let changes = 0;
+  for (let i = 1; i < last15.length; i++) {
+    if (last15[i].outcome !== last15[i-1].outcome && last15[i].outcome !== 'ZERO' && last15[i-1].outcome !== 'ZERO') {
+      changes++;
+    }
+  }
+  return changes / 14;
+};
+
+const detectWhipsaw = (hist: HistoryEntry[]) => {
+  if (hist.length < 10) return false;
+  const last10 = hist.slice(-10);
+  let streaksOf3 = 0;
+  let currentStreak = 0;
+  let currentColor = null;
+  
+  for (const h of last10) {
+    if (h.outcome === 'ZERO') continue;
+    if (h.outcome === currentColor) {
+      currentStreak++;
+      if (currentStreak === 3) streaksOf3++;
+    } else {
+      currentStreak = 1;
+      currentColor = h.outcome;
+    }
+  }
+  return streaksOf3 >= 2;
 };
 
 const getRecommendation = (hist: HistoryEntry[], attackStep: number, currentStep: number): Outcome | 'WAIT' => {
@@ -156,17 +189,26 @@ const getRecommendation = (hist: HistoryEntry[], attackStep: number, currentStep
   return 'RED';
 };
 
+const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outcome }) {
+  return (
+    <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white border-2
+        ${outcome === 'RED' ? 'bg-red-600 border-red-500' :
+        outcome === 'BLACK' ? 'bg-gray-900 border-gray-700' :
+          'bg-emerald-600 border-emerald-500'}`}
+    >
+      {outcome === 'RED' ? 'К' : outcome === 'BLACK' ? 'Ч' : 'З'}
+    </div>
+  );
+});
+
 export default function MatreshkaQuantum() {
   const [isClient, setIsClient] = useState(false);
   const [initialBankroll, setInitialBankroll] = useState<number>(0);
-  const [minBet, setMinBet] = useState<number>(1000);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [showSummary, setShowSummary] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [setupVal, setSetupVal] = useState('');
-  const [setupMinBet, setSetupMinBet] = useState('1000');
-  const [autoScale, setAutoScale] = useState(false);
   const [zeroMessage, setZeroMessage] = useState(false);
   const [mode, setMode] = useState<'SAFE' | 'QUANT_YIELD'>('SAFE');
   const [attackStep, setAttackStep] = useState<number>(0);
@@ -178,6 +220,18 @@ export default function MatreshkaQuantum() {
   const [isEditingBet, setIsEditingBet] = useState(false);
   const [editBetValue, setEditBetValue] = useState('');
   const [sessionLogs, setSessionLogs] = useState<SessionLogEntry[]>([]);
+  const [isShadowMode, setIsShadowMode] = useState(false);
+  const [frozenStep, setFrozenStep] = useState<number>(0);
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isShadowMode) {
+      interval = setInterval(() => {
+        playHum();
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isShadowMode]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -192,11 +246,12 @@ export default function MatreshkaQuantum() {
       try {
         const parsed = JSON.parse(saved);
         setInitialBankroll(parsed.initialBankroll || 0);
-        setMinBet(parsed.minBet || 1000);
         setHistory(parsed.history || []);
         setCurrentStep(parsed.currentStep || 1);
         setMode(parsed.mode || 'SAFE');
         setAttackStep(parsed.attackStep || 0);
+        setIsShadowMode(parsed.isShadowMode || false);
+        setFrozenStep(parsed.frozenStep || 0);
         if (parsed.sessionStartTime) setSessionStartTime(parsed.sessionStartTime);
       } catch (e) {
         console.error("Failed to parse saved state", e);
@@ -213,10 +268,10 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_state', JSON.stringify({
-        initialBankroll, minBet, history, currentStep, mode, attackStep, sessionStartTime
+        initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isShadowMode, frozenStep
       }));
     }
-  }, [initialBankroll, minBet, history, currentStep, mode, attackStep, sessionStartTime, isClient]);
+  }, [initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep]);
 
   const saveCurrentSession = () => {
     if (history.length === 0) return;
@@ -238,44 +293,19 @@ export default function MatreshkaQuantum() {
     localStorage.setItem('matreshka_sessions', JSON.stringify(updatedSessions));
   };
 
-  useEffect(() => {
-    if (autoScale) {
-        const bankroll = Number(setupVal) || 0;
-        let maxSafeBase = Math.floor(bankroll / 1020);
-        
-        let step8Multiplier = 1;
-        for (let i = 1; i < 8; i++) {
-            step8Multiplier *= 2.2;
-        }
-        const maxBaseCap = Math.floor(1000000 / step8Multiplier);
-        
-        if (maxSafeBase > maxBaseCap) {
-            maxSafeBase = maxBaseCap;
-        }
-        if (maxSafeBase < 1000) {
-            maxSafeBase = 1000;
-        }
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setSetupMinBet(maxSafeBase.toString());
-    }
-  }, [setupVal, autoScale]);
+  const calculateBaseUnit = (bankroll: number) => {
+    const SafeUnit = Math.max(1000, Math.min(bankroll / 100, 1800));
+    const AggressiveUnit = Math.min(SafeUnit * 2.5, 4500);
+    return { SafeUnit, AggressiveUnit };
+  };
 
   if (!isClient) return null;
 
   if (initialBankroll === 0) {
-    const parsedMinBet = Math.max(1000, Number(setupMinBet) || 1000);
-    const optimalBalance = parsedMinBet * 1020;
-    
-    let maxSteps = 0;
-    let currentLoss = 0;
-    let stepBet = parsedMinBet;
     const parsedBankroll = Number(setupVal) || 0;
+    const { SafeUnit, AggressiveUnit } = calculateBaseUnit(parsedBankroll);
     
-    while (currentLoss + stepBet <= parsedBankroll && maxSteps < 50) {
-      maxSteps++;
-      currentLoss += stepBet;
-      stepBet = Math.round(stepBet * 2.2);
-    }
+    const maxSteps = SafeUnit > 0 ? Math.floor(Math.log(parsedBankroll / SafeUnit) / Math.log(2.2)) : 0;
 
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 font-sans text-white">
@@ -294,32 +324,8 @@ export default function MatreshkaQuantum() {
                 value={setupVal}
                 onChange={e => setSetupVal(e.target.value)}
                 className="w-full bg-black border border-gray-800 text-emerald-400 text-3xl p-4 rounded-xl focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center"
-                placeholder="1020000"
+                placeholder="100000"
               />
-            </div>
-            <div>
-              <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Минимальная ставка стола (₽)</label>
-              <input
-                type="number"
-                value={setupMinBet}
-                onChange={e => setSetupMinBet(e.target.value)}
-                onBlur={e => {
-                  if (Number(e.target.value) < 1000) setSetupMinBet('1000');
-                }}
-                disabled={autoScale}
-                className="w-full bg-black border border-gray-800 text-white text-xl p-4 rounded-xl focus:outline-none focus:border-gray-600 transition-colors font-mono text-center disabled:opacity-50"
-                placeholder="1000"
-              />
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => setAutoScale(!autoScale)}
-                className={`w-6 h-6 rounded flex items-center justify-center border ${autoScale ? 'bg-emerald-500 border-emerald-500' : 'bg-transparent border-gray-600'}`}
-              >
-                {autoScale && <CheckCircle2 size={14} className="text-black" />}
-              </button>
-              <span className="text-sm text-gray-300 font-bold uppercase tracking-widest">Авто-масштабирование ставки</span>
             </div>
 
             {parsedBankroll > 0 && (
@@ -328,9 +334,12 @@ export default function MatreshkaQuantum() {
                   <Info className="text-emerald-400 shrink-0 mt-0.5" size={18} />
                   <div>
                     <p className="text-sm text-gray-300 mb-1">
-                      Для этой ставки рекомендуется баланс: <span className="font-bold text-white">{optimalBalance.toLocaleString('ru-RU')} ₽</span>
+                      Базовая ставка: <span className="font-bold text-white">{Math.round(SafeUnit).toLocaleString('ru-RU')} ₽</span>
                     </p>
-                    <p className="text-xs text-gray-400">
+                    <p className="text-sm text-gray-300 mb-1">
+                      Агрессивная ставка: <span className="font-bold text-yellow-500">{Math.round(AggressiveUnit).toLocaleString('ru-RU')} ₽</span>
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
                       Ваш баланс выдержит <span className="font-bold text-emerald-400">{maxSteps}</span> шагов прогрессии.
                     </p>
                   </div>
@@ -341,10 +350,8 @@ export default function MatreshkaQuantum() {
             <button
               onClick={() => {
                 const val = Number(setupVal);
-                const minB = Math.max(1000, Number(setupMinBet));
-                if (val > 0 && minB > 0) {
+                if (val > 0) {
                   setInitialBankroll(val);
-                  setMinBet(minB);
                   setHistory([]);
                   setCurrentStep(1);
                   setAttackStep(0);
@@ -352,7 +359,7 @@ export default function MatreshkaQuantum() {
                   setSessionStartTime(Date.now());
                 }
               }}
-              disabled={!setupVal || Number(setupVal) <= 0 || !setupMinBet || Number(setupMinBet) <= 0}
+              disabled={!setupVal || Number(setupVal) <= 0}
               className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 rounded-xl uppercase tracking-widest disabled:opacity-50 transition-colors mt-4"
             >
               Запустить Движок
@@ -384,21 +391,35 @@ export default function MatreshkaQuantum() {
 
   const currentBankroll = initialBankroll + history.reduce((acc, curr) => acc + curr.netProfit, 0);
   const profit = currentBankroll - initialBankroll;
+  const sessionROI = initialBankroll > 0 ? ((profit / initialBankroll) * 100).toFixed(2) : "0.00";
 
-  let nextBet = minBet;
-  if (manualBet !== null) {
-      nextBet = manualBet;
-  } else if (attackStep > 0 && history.length > 0) {
-      const lastBet = history[history.length - 1].betAmount || minBet;
-      nextBet = Math.round(lastBet * 1.9);
-  } else if (currentStep > 1 && history.length > 0) {
-      const lastBet = history[history.length - 1].betAmount || minBet;
-      nextBet = Math.round(lastBet * 2.2);
-  } else {
-      nextBet = minBet;
+  const { SafeUnit, AggressiveUnit } = calculateBaseUnit(currentBankroll);
+
+  const serverStability = calculateStability(history);
+  let currentUnit = SafeUnit;
+  if (history.length >= 15) {
+    if (serverStability > 0.6) currentUnit = AggressiveUnit;
+    else if (serverStability < 0.4) currentUnit = SafeUnit;
   }
 
-  if (nextBet > currentBankroll && currentBankroll > 0) {
+  let nextBet = currentUnit;
+  let isPhantomBet = false;
+
+  if (isShadowMode) {
+      nextBet = 1000;
+      isPhantomBet = true;
+  } else if (manualBet !== null) {
+      nextBet = manualBet;
+  } else if (attackStep > 0 && history.length > 0) {
+      const lastBet = history[history.length - 1].betAmount || currentUnit;
+      nextBet = Math.max(1000, Math.round((lastBet * 1.9) / 100) * 100);
+  } else if (currentStep > 1) {
+      nextBet = Math.max(1000, Math.round((currentUnit * Math.pow(2.2, currentStep - 1)) / 100) * 100);
+  } else {
+      nextBet = Math.max(1000, Math.round(currentUnit / 100) * 100);
+  }
+
+  if (nextBet > currentBankroll && currentBankroll > 0 && !isPhantomBet) {
       nextBet = currentBankroll;
   }
 
@@ -408,24 +429,9 @@ export default function MatreshkaQuantum() {
 
   const isMaxLimit = nextBet >= 1000000;
 
-  let remainingSteps = 0;
-  let simulatedBankroll = currentBankroll;
-  let simulatedBet = nextBet;
-  let simAttackStep = attackStep;
-  
-  while (simulatedBankroll >= simulatedBet && simulatedBet <= 1000000 && remainingSteps < 20) {
-    remainingSteps++;
-    simulatedBankroll -= simulatedBet;
-    if (remainingSteps === 1 && simAttackStep > 0) {
-        simulatedBet = Math.round(simulatedBet * 1.9);
-    } else {
-        simulatedBet = Math.round(simulatedBet * 2.2);
-    }
-  }
+  const survivalSteps = currentUnit > 0 ? Math.floor(Math.log(currentBankroll / currentUnit) / Math.log(2.2)) : 0;
 
-  if (simulatedBankroll > 0 && simulatedBankroll < simulatedBet && simulatedBet <= 1000000 && remainingSteps < 20) {
-      remainingSteps++;
-  }
+  const isWhipsaw = detectWhipsaw(history);
 
   const baseRecommendation = getRecommendation(history, attackStep, currentStep);
   const recommendation = manualColor !== null ? manualColor : baseRecommendation;
@@ -561,7 +567,7 @@ export default function MatreshkaQuantum() {
   }
 
   const handleOutcome = (outcome: Outcome) => {
-    playClick();
+    playHapticClick();
     setManualBet(null);
     setManualColor(null);
     setIsEditingBet(false);
@@ -570,49 +576,62 @@ export default function MatreshkaQuantum() {
     let netProfit = 0;
     let nextStep = currentStep;
     let nextAttackStep = attackStep;
+    let nextShadowMode = isShadowMode;
+    let nextFrozenStep = frozenStep;
 
     if (outcome === 'ZERO') {
       isWin = false;
       netProfit = recommendation !== 'WAIT' ? -nextBet : 0;
       nextStep = 1;
       nextAttackStep = 0;
+      nextShadowMode = false;
       setZeroMessage(true);
       setTimeout(() => setZeroMessage(false), 4000);
     } else if (recommendation === outcome) {
       isWin = true;
       netProfit = nextBet * 0.98; // 2% tax on win
       
-      if (mode === 'QUANT_YIELD') {
-        const last3 = history.slice(-3);
-        const isTrend = last3.length === 3 && last3.every(h => h.outcome === outcome);
-        
-        if (attackStep > 0) {
-            if (attackStep < 3) {
-                nextAttackStep = attackStep + 1;
-                nextStep = 1;
-            } else {
-                nextAttackStep = 0;
-                nextStep = 1;
-            }
-        } else if (isTrend) {
-            nextAttackStep = 1;
-            nextStep = 1;
-        } else {
-            nextAttackStep = 0;
-            nextStep = 1;
-        }
-      } else {
-        nextStep = 1;
+      if (isShadowMode) {
+        nextShadowMode = false;
+        nextStep = frozenStep;
         nextAttackStep = 0;
+      } else {
+        if (mode === 'QUANT_YIELD') {
+          const last3 = history.slice(-3);
+          const isTrend = last3.length === 3 && last3.every(h => h.outcome === outcome);
+          
+          if (attackStep > 0) {
+              if (attackStep < 3) {
+                  nextAttackStep = attackStep + 1;
+                  nextStep = 1;
+              } else {
+                  nextAttackStep = 0;
+                  nextStep = 1;
+              }
+          } else if (isTrend) {
+              nextAttackStep = 1;
+              nextStep = 1;
+          } else {
+              nextAttackStep = 0;
+              nextStep = 1;
+          }
+        } else {
+          nextStep = 1;
+          nextAttackStep = 0;
+        }
       }
     } else {
       isWin = false;
       netProfit = recommendation !== 'WAIT' ? -nextBet : 0;
-      if (attackStep > 0) {
-          nextStep = 2;
-          nextAttackStep = 0;
+      if (isShadowMode) {
+        nextStep = currentStep + 1;
       } else {
-          nextStep = currentStep + 1;
+        if (attackStep > 0) {
+            nextStep = 2;
+            nextAttackStep = 0;
+        } else {
+            nextStep = currentStep + 1;
+        }
       }
     }
 
@@ -626,9 +645,18 @@ export default function MatreshkaQuantum() {
     };
 
     const newHistory = [...history, newEntry];
+    const newStability = calculateStability(newHistory);
+
+    if (!nextShadowMode && !isWin && nextStep >= 4 && newStability < 0.4) {
+      nextShadowMode = true;
+      nextFrozenStep = nextStep;
+    }
+
     setHistory(newHistory);
     setCurrentStep(nextStep);
     setAttackStep(nextAttackStep);
+    setIsShadowMode(nextShadowMode);
+    setFrozenStep(nextFrozenStep);
 
     const nowMs = new Date().getTime();
     const timeSinceLast = sessionLogs.length > 0 ? nowMs - sessionLogs[sessionLogs.length - 1].timestamp : 0;
@@ -656,7 +684,7 @@ export default function MatreshkaQuantum() {
 
   const handleUndo = () => {
     if (history.length === 0) return;
-    playClick();
+    playHapticClick();
     setManualBet(null);
     setManualColor(null);
     setIsEditingBet(false);
@@ -670,53 +698,77 @@ export default function MatreshkaQuantum() {
 
     let step = 1;
     let aStep = 0;
+    let shadow = false;
+    let frozen = 0;
     
     for (let i = 0; i < newHistory.length; i++) {
         const entry = newHistory[i];
         const rec = getRecommendation(newHistory.slice(0, i), aStep, step);
+        const stab = calculateStability(newHistory.slice(0, i + 1));
         
+        let isWin = (entry.outcome === rec && entry.outcome !== 'ZERO');
+
         if (entry.outcome === 'ZERO') {
             step = 1;
             aStep = 0;
-        } else if (rec === entry.outcome) {
-            if (mode === 'QUANT_YIELD') {
-                const last3 = newHistory.slice(Math.max(0, i - 3), i);
-                const isTrend = last3.length === 3 && last3.every(h => h.outcome === entry.outcome);
-                
-                if (aStep > 0) {
-                    if (aStep < 3) {
-                        aStep++;
+            shadow = false;
+        } else if (isWin) {
+            if (shadow) {
+                shadow = false;
+                step = frozen;
+                aStep = 0;
+            } else {
+                if (mode === 'QUANT_YIELD') {
+                    const last3 = newHistory.slice(Math.max(0, i - 3), i);
+                    const isTrend = last3.length === 3 && last3.every(h => h.outcome === entry.outcome);
+                    
+                    if (aStep > 0) {
+                        if (aStep < 3) {
+                            aStep++;
+                            step = 1;
+                        } else {
+                            aStep = 0;
+                            step = 1;
+                        }
+                    } else if (isTrend) {
+                        aStep = 1;
                         step = 1;
                     } else {
                         aStep = 0;
                         step = 1;
                     }
-                } else if (isTrend) {
-                    aStep = 1;
-                    step = 1;
                 } else {
-                    aStep = 0;
                     step = 1;
+                    aStep = 0;
                 }
-            } else {
-                step = 1;
-                aStep = 0;
             }
         } else {
-            if (aStep > 0) {
-                step = 2;
-                aStep = 0;
-            } else {
+            if (shadow) {
                 step++;
+            } else {
+                if (aStep > 0) {
+                    step = 2;
+                    aStep = 0;
+                } else {
+                    step++;
+                }
             }
+        }
+
+        if (!shadow && !isWin && step >= 4 && stab < 0.4) {
+            shadow = true;
+            frozen = step;
         }
     }
     
     setCurrentStep(step);
     setAttackStep(aStep);
+    setIsShadowMode(shadow);
+    setFrozenStep(frozen);
   };
 
   const handleTakeProfit = () => {
+      playHapticClick();
       setAttackStep(0);
       setCurrentStep(1);
       setManualBet(null);
@@ -798,7 +850,7 @@ export default function MatreshkaQuantum() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-emerald-500/30 pb-12">
+    <div className={`min-h-screen bg-[#050505] text-white font-sans selection:bg-emerald-500/30 pb-12 transition-colors duration-500`}>
       {/* Header */}
       <header className="border-b border-gray-800 bg-[#050505]/80 backdrop-blur-md sticky top-0 z-10">
         <div className="max-w-md mx-auto px-4 py-4 flex justify-between items-center">
@@ -811,7 +863,7 @@ export default function MatreshkaQuantum() {
               </span>
             </div>
             <div className={`text-2xl font-mono font-black tracking-tighter ${profit >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
-              {profit >= 0 ? '+' : ''}{Math.round(profit).toLocaleString('ru-RU')} ₽
+              {profit >= 0 ? '+' : ''}{Math.round(profit).toLocaleString('ru-RU')} ₽ <span className="text-xs text-gray-500 font-bold ml-1">({sessionROI}%)</span>
             </div>
             <div className="text-[10px] text-gray-500 font-mono mt-0.5">
               Баланс: {Math.round(currentBankroll).toLocaleString('ru-RU')} ₽
@@ -840,21 +892,12 @@ export default function MatreshkaQuantum() {
       </header>
 
       <main className="max-w-md mx-auto p-4 space-y-6">
-        {/* Live Metrics */}
-        <div className="grid grid-cols-2 gap-4">
-          <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-4">
-            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1 font-bold">Состояние Сервера</div>
-            <div className={`font-mono font-bold text-lg ${serverPhase === 'СТАБИЛЬНО' ? 'text-emerald-400' : serverPhase === 'СЛИВ' ? 'text-red-500' : 'text-yellow-500'}`}>
-              {serverPhase}
-            </div>
+        {isWhipsaw && (
+          <div className="bg-red-900/50 border border-red-500/50 rounded-xl p-4 text-center animate-pulse">
+            <div className="text-red-400 font-black tracking-widest uppercase text-sm">ОБНАРУЖЕН ХЛЫСТ</div>
+            <div className="text-red-300/80 text-xs mt-1">МИНИМАЛЬНЫЕ СТАВКИ</div>
           </div>
-          <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-4">
-            <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1 font-bold">Мат. Ожидание</div>
-            <div className={`font-mono font-bold text-lg ${dynamicExpectancy >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
-              {dynamicExpectancy > 0 ? '+' : ''}{dynamicExpectancy.toFixed(2)}%
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Main Display */}
         <motion.div
@@ -862,26 +905,30 @@ export default function MatreshkaQuantum() {
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           className={`relative overflow-hidden rounded-3xl p-8 border-2 flex flex-col items-center justify-center min-h-[240px] shadow-2xl
-              ${attackStep > 0 ? 'bg-yellow-950/30 border-yellow-500/50 shadow-[0_0_40px_rgba(234,179,8,0.2)]' :
-              recommendation === 'RED' ? 'bg-red-950/20 border-red-900/50 shadow-red-900/20' :
-              recommendation === 'BLACK' ? 'bg-gray-900/50 border-gray-700 shadow-black/50' :
-                'bg-gray-900/50 border-gray-800'}`}
+              ${isShadowMode ? 'bg-black border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] animate-pulse' :
+              mode === 'QUANT_YIELD' ? 'bg-black border-emerald-500 shadow-[0_0_40px_rgba(16,185,129,0.2)]' :
+              'bg-black border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.2)]'}`}
         >
           <div className={`absolute top-4 left-5 font-black tracking-widest text-sm
             ${currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-yellow-500' : 'text-red-500'}`}>
-            {attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ: ${currentStep}`}
+            {attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ${currentStep}`}
           </div>
 
-          {attackStep > 0 ? (
+          {isShadowMode ? (
+             <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+               👻 SHADOW MODE: PHANTOM PROTOCOL
+             </div>
+          ) : attackStep > 0 ? (
              <div className="text-yellow-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🔥 РЕЖИМ АТАКИ: РЕИНВЕСТ ПРОФИТА
              </div>
           ) : (
-             <div className="text-gray-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4">РЕКОМЕНДАЦИЯ</div>
+             <div className="text-gray-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4">СЛЕДУЮЩИЙ ХОД</div>
           )}
 
           <div className={`text-5xl sm:text-6xl font-black tracking-tighter mb-4
-              ${attackStep > 0 ? 'text-yellow-500' :
+              ${isShadowMode ? 'text-purple-400' :
+              attackStep > 0 ? 'text-yellow-500' :
               recommendation === 'RED' ? 'text-red-500' :
               recommendation === 'BLACK' ? 'text-white' :
                 'text-gray-500'}`}
@@ -929,7 +976,7 @@ export default function MatreshkaQuantum() {
               </div>
             ) : (
               <>
-                <span>СТАВКА: {Math.round(nextBet).toLocaleString('ru-RU')} ₽</span>
+                <span>СТАВКА: {Math.round(nextBet).toLocaleString('ru-RU')} ₽ {isShadowMode && '(PHANTOM)'}</span>
                 <button
                   onClick={() => {
                     setEditBetValue(Math.round(nextBet).toString());
@@ -986,6 +1033,26 @@ export default function MatreshkaQuantum() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Input Zone (Moved up) */}
+        <div className="pt-4 pb-2">
+          <div className="text-center text-gray-500 text-[10px] font-bold tracking-widest uppercase mb-3">Ввод результата (Что выпало?)</div>
+          <div className="grid grid-cols-3 gap-3">
+            <button onClick={() => handleOutcome('RED')} className="bg-red-600 hover:bg-red-500 active:scale-95 transition-all h-24 rounded-2xl font-black text-xl tracking-widest shadow-[0_0_30px_rgba(220,38,38,0.3)] border border-red-500/50">
+              КРАСНОЕ
+            </button>
+            <button onClick={() => handleOutcome('ZERO')} className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all h-24 rounded-2xl font-black text-xl tracking-widest shadow-[0_0_30px_rgba(16,185,129,0.3)] border border-emerald-500/50">
+              ЗЕРО
+            </button>
+            <button onClick={() => handleOutcome('BLACK')} className="bg-gray-900 hover:bg-gray-800 active:scale-95 transition-all h-24 rounded-2xl font-black text-xl tracking-widest border border-gray-700 shadow-[0_0_30px_rgba(0,0,0,0.5)]">
+              ЧЕРНОЕ
+            </button>
+          </div>
+        </div>
+
+        <button onClick={handleUndo} disabled={history.length === 0} className="w-full py-4 rounded-2xl border border-gray-800 text-gray-400 hover:text-white hover:bg-gray-900 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none uppercase tracking-widest text-xs font-bold">
+          <Undo2 size={16} /> Отменить Последний Ввод
+        </button>
 
         {/* Analytics HUD */}
         <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 space-y-4">
@@ -1067,7 +1134,7 @@ export default function MatreshkaQuantum() {
         <div className="w-full bg-gray-900/80 rounded-2xl p-5 border border-gray-800">
           <div className="flex justify-between items-center text-[10px] font-bold text-gray-500 mb-3 tracking-widest uppercase">
             <span>Безопасно</span>
-            <span className="text-emerald-400">Запас прочности: {remainingSteps} промахов</span>
+            <span className="text-emerald-400">ЗАПАС ПРОЧНОСТИ: {survivalSteps} ШАГОВ</span>
             <span className="text-red-500">Критически</span>
           </div>
           <div className="flex gap-1.5 h-3">
@@ -1087,36 +1154,10 @@ export default function MatreshkaQuantum() {
 
         {/* History Rail */}
         <div className="flex gap-2 overflow-x-auto py-2 scrollbar-hide">
-          {history.slice(-15).map(h => (
-            <div key={h.id} className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white border-2
-                ${h.outcome === 'RED' ? 'bg-red-600 border-red-500' :
-                h.outcome === 'BLACK' ? 'bg-gray-900 border-gray-700' :
-                  'bg-emerald-600 border-emerald-500'}`}
-            >
-              {h.outcome === 'RED' ? 'К' : h.outcome === 'BLACK' ? 'Ч' : 'З'}
-            </div>
+          {history.slice(-30).map(h => (
+            <HistoryIcon key={h.id} outcome={h.outcome} />
           ))}
         </div>
-
-        {/* Input Zone */}
-        <div className="pt-2">
-          <div className="text-center text-gray-400 text-xs font-bold tracking-widest uppercase mb-3">Что выпало?</div>
-          <div className="grid grid-cols-3 gap-3">
-            <button onClick={() => handleOutcome('RED')} className="bg-red-600 hover:bg-red-500 active:scale-95 transition-all h-20 rounded-2xl font-black text-lg tracking-widest shadow-[0_0_20px_rgba(220,38,38,0.2)]">
-              КРАСНОЕ
-            </button>
-            <button onClick={() => handleOutcome('ZERO')} className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all h-20 rounded-2xl font-black text-lg tracking-widest shadow-[0_0_20px_rgba(16,185,129,0.2)]">
-              ЗЕРО
-            </button>
-            <button onClick={() => handleOutcome('BLACK')} className="bg-gray-800 hover:bg-gray-700 active:scale-95 transition-all h-20 rounded-2xl font-black text-lg tracking-widest border border-gray-700 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
-              ЧЕРНОЕ
-            </button>
-          </div>
-        </div>
-
-        <button onClick={handleUndo} disabled={history.length === 0} className="w-full py-5 rounded-2xl border border-gray-800 text-gray-400 hover:text-white hover:bg-gray-900 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none uppercase tracking-widest text-xs font-bold mt-2">
-          <Undo2 size={16} /> Отменить Последний Ввод
-        </button>
       </main>
 
       {/* Session Summary Modal */}
@@ -1140,7 +1181,7 @@ export default function MatreshkaQuantum() {
               <p className="text-gray-400 mb-6 text-sm">Вы достигли цели в 20% прибыли для этой сессии.</p>
 
               <div className="bg-black rounded-xl p-5 mb-6 border border-gray-800">
-                <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2 font-bold">Чистая Прибыль</div>
+                <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-2 font-bold">ПРОФИТ СЕССИИ</div>
                 <div className="text-3xl font-mono text-emerald-400 font-black">+{Math.round(profit).toLocaleString('ru-RU')} ₽</div>
               </div>
 
@@ -1152,6 +1193,9 @@ export default function MatreshkaQuantum() {
                   setHistory([]);
                   setCurrentStep(1);
                   setAttackStep(0);
+                  setSessionLogs([]);
+                  setIsShadowMode(false);
+                  setFrozenStep(0);
                   localStorage.removeItem('matreshka_state');
                 }}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
@@ -1205,6 +1249,9 @@ export default function MatreshkaQuantum() {
                     setCurrentStep(1);
                     setAttackStep(0);
                     setShowSummary(false);
+                    setSessionLogs([]);
+                    setIsShadowMode(false);
+                    setFrozenStep(0);
                     localStorage.removeItem('matreshka_state');
                   }}
                   className="flex-1 bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
