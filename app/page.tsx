@@ -143,16 +143,6 @@ const calculateCRS = (hist: HistoryEntry[]) => {
   return null;
 };
 
-const calculateSwitchDensity = (history: HistoryEntry[], window = 20) => {
-  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
-  if (nonZero.length < 2) return 0;
-  let switches = 0;
-  for (let i = 1; i < nonZero.length; i++) {
-    if (nonZero[i].outcome !== nonZero[i - 1].outcome) switches++;
-  }
-  return switches / (nonZero.length - 1);
-};
-
 const getGlobalSkew = (history: HistoryEntry[]) => {
   const nonZero = history.filter(h => h.outcome !== 'ZERO');
   if (nonZero.length === 0) return { red: 50, black: 50, dominant: null };
@@ -178,61 +168,131 @@ const getLocalSkew = (history: HistoryEntry[], window = 15) => {
   return { red: redPct, black: blackPct, dominant };
 };
 
-const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendation: Outcome, confidence: number, state: string } => {
-  if (history.length === 0) return { recommendation: 'RED', confidence: 50, state: 'ТРЕНД' };
-
-  const globalSkew = getGlobalSkew(history);
-  const localSkew = getLocalSkew(history);
-  const switchDensity = calculateSwitchDensity(history);
+const getApexMatrix = (history: HistoryEntry[], window = 20) => {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
   
-  const nonZero = history.filter(h => h.outcome !== 'ZERO');
+  let redCount = 0;
+  let blackCount = 0;
+  let maxStreakRed = 0;
+  let maxStreakBlack = 0;
   
-  let state = 'ТРЕНД';
-  if (switchDensity > 0.6) state = 'ПИЛА';
+  let currentStreak = 0;
+  let currentColor: Outcome | null = null;
   
-  const last3 = history.slice(-3);
-  const hasZeroInLast3 = last3.some(h => h.outcome === 'ZERO');
-  if (hasZeroInLast3 || (localSkew.dominant && globalSkew.dominant && localSkew.dominant !== globalSkew.dominant)) {
-    state = 'ТУРБУЛЕНТНОСТЬ';
-  }
-
-  let recommendation: Outcome = 'RED';
-  let matrixBonus = 0;
-
-  if (nonZero.length < 3) {
-    recommendation = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
-  } else {
-    const L1 = nonZero[nonZero.length - 1].outcome;
-    const L2 = nonZero[nonZero.length - 2].outcome;
-    const L3 = nonZero[nonZero.length - 3].outcome;
-
-    if (L1 === L2 && L2 === L3) {
-      if (switchDensity > 0.6) {
-        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
-        matrixBonus = 15;
-      } else {
-        recommendation = L1;
-        matrixBonus = 10;
-      }
+  for (const h of nonZero) {
+    if (h.outcome === 'RED') redCount++;
+    if (h.outcome === 'BLACK') blackCount++;
+    
+    if (h.outcome === currentColor) {
+      currentStreak++;
     } else {
-      if (localSkew.dominant) {
-        recommendation = localSkew.dominant;
-        matrixBonus = 5;
+      currentColor = h.outcome;
+      currentStreak = 1;
+    }
+    
+    if (currentColor === 'RED' && currentStreak > maxStreakRed) maxStreakRed = currentStreak;
+    if (currentColor === 'BLACK' && currentStreak > maxStreakBlack) maxStreakBlack = currentStreak;
+  }
+  
+  let alpha: Outcome | 'NEUTRAL' = 'NEUTRAL';
+  let omega: Outcome | 'NEUTRAL' = 'NEUTRAL';
+  
+  if (nonZero.length > 0) {
+    if (redCount / nonZero.length > 0.6) {
+      alpha = 'RED';
+      omega = 'BLACK';
+    } else if (blackCount / nonZero.length > 0.6) {
+      alpha = 'BLACK';
+      omega = 'RED';
+    }
+  }
+  
+  let currentActiveStreak = 0;
+  let currentActiveColor: Outcome | null = null;
+  if (nonZero.length > 0) {
+    currentActiveColor = nonZero[nonZero.length - 1].outcome;
+    for (let i = nonZero.length - 1; i >= 0; i--) {
+      if (nonZero[i].outcome === currentActiveColor) {
+        currentActiveStreak++;
       } else {
-        if (L1 !== L2 && L2 !== L3) {
-          recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
-        } else {
-          recommendation = L1;
-        }
+        break;
       }
     }
   }
+  
+  return {
+    alpha,
+    omega,
+    maxStreakRed,
+    maxStreakBlack,
+    currentActiveColor,
+    currentActiveStreak
+  };
+};
 
-  const localPct = recommendation === 'RED' ? localSkew.red : localSkew.black;
-  let confidence = 50 + (localPct - 50) + matrixBonus;
-  confidence = Math.min(99, Math.max(1, Math.round(confidence)));
+const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendation: Outcome, confidence: number, state: string, triggerPhantom: boolean, triggerStrike: boolean } => {
+  if (history.length === 0) return { recommendation: 'RED', confidence: 50, state: 'АНАЛИЗ', triggerPhantom: false, triggerStrike: false };
 
-  return { recommendation, confidence, state };
+  const matrix = getApexMatrix(history);
+  const nonZero = history.filter(h => h.outcome !== 'ZERO');
+  
+  let recommendation: Outcome = 'RED';
+  let confidence = 50;
+  let state = 'АНАЛИЗ';
+  let triggerPhantom = false;
+  let triggerStrike = false;
+
+  if (nonZero.length < 2) {
+    recommendation = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
+    return { recommendation, confidence, state, triggerPhantom, triggerStrike };
+  }
+
+  const L1 = nonZero[nonZero.length - 1].outcome;
+  const L2 = nonZero[nonZero.length - 2].outcome;
+
+  const currentMaxStreak = matrix.currentActiveColor === 'RED' ? matrix.maxStreakRed : matrix.maxStreakBlack;
+  
+  if (matrix.currentActiveColor && matrix.currentActiveStreak >= currentMaxStreak && currentMaxStreak > 0) {
+    recommendation = matrix.currentActiveColor === 'RED' ? 'BLACK' : 'RED';
+    confidence = 90;
+    state = 'ОТСКОК ОТ ПОТОЛКА';
+    triggerStrike = true;
+  } else if (L1 === L2) {
+    if (L1 === matrix.alpha && currentMaxStreak > 2) {
+      recommendation = L1;
+      confidence = 75;
+      state = 'АЛЬФА-ТРЕНД';
+    } else if (L1 === matrix.omega) {
+      recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+      confidence = 30;
+      state = 'ОМЕГА-ЛОВУШКА';
+      triggerPhantom = true;
+    } else {
+      recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+      confidence = 50;
+      state = 'НЕЙТРАЛЬНО';
+    }
+  } else {
+    recommendation = L1;
+    confidence = 55;
+    state = 'ЧЕРЕДОВАНИЕ';
+  }
+  
+  if (L1 === matrix.alpha && L2 === matrix.omega) {
+    let omegaStreakBefore = 0;
+    for (let i = nonZero.length - 2; i >= 0; i--) {
+      if (nonZero[i].outcome === matrix.omega) omegaStreakBefore++;
+      else break;
+    }
+    if (omegaStreakBefore >= 2) {
+      recommendation = matrix.alpha;
+      confidence = 85;
+      state = 'ЗАРОЖДЕНИЕ АЛЬФЫ';
+      triggerStrike = true;
+    }
+  }
+
+  return { recommendation, confidence, state, triggerPhantom, triggerStrike };
 };
 
 const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outcome }) {
@@ -462,7 +522,11 @@ export default function MatreshkaQuantum() {
     serverPhase = 'СЛИВ';
   }
 
-  const { recommendation: baseRecommendation, confidence: confidenceValue, state: serverState } = getRecommendationAndConfidence(history);
+  let { recommendation: baseRecommendation, confidence: confidenceValue, state: serverState, triggerPhantom, triggerStrike } = getRecommendationAndConfidence(history);
+
+  if (zeroCountLast10 >= 2) {
+    serverState = 'СЛИВ';
+  }
 
   let targetProfit = SafeUnit;
   if (serverState === 'ПИЛА' || serverState === 'ТРЕНД') {
@@ -473,6 +537,7 @@ export default function MatreshkaQuantum() {
 
   let rawBet = (cdt + targetProfit) / 0.98;
   let maxStrikeBet = initialBankroll * 0.05;
+  let isSniperRecovery = rawBet > maxStrikeBet;
   let nextBet = Math.max(1000, Math.round(Math.min(rawBet, maxStrikeBet)));
   let isPhantomBet = false;
 
@@ -630,40 +695,27 @@ export default function MatreshkaQuantum() {
       isWin = false;
       netProfit = -nextBet;
       nextCdt += nextBet;
-      if (isShadowMode) {
-        setPhantomWins(0);
-      }
       setZeroMessage(true);
       setTimeout(() => setZeroMessage(false), 4000);
     } else if (recommendation === outcome) {
       isWin = true;
-      netProfit = nextBet * 0.96; // 4% tax on win
+      netProfit = nextBet * 0.98; // 2% tax on win
       nextCdt = Math.max(0, nextCdt - netProfit);
       if (nextCdt < 10) nextCdt = 0;
       
-      if (isShadowMode) {
-        const newPhantomWins = phantomWins + 1;
-        setPhantomWins(newPhantomWins);
-        if (newPhantomWins >= 2) {
+      if (nextCdt === 0) {
+        nextStep = 1;
+        nextAttackStep = 0;
+        if (isShadowMode) {
           nextShadowMode = false;
           justExitedShadow = true;
-          setPhantomWins(0);
-          nextStep = 1;
-          nextAttackStep = 0;
-        }
-      } else {
-        if (nextCdt === 0) {
-          nextStep = 1;
-          nextAttackStep = 0;
         }
       }
     } else {
       isWin = false;
       netProfit = -nextBet;
       nextCdt += nextBet;
-      if (isShadowMode) {
-        setPhantomWins(0);
-      } else {
+      if (!isShadowMode) {
         nextStep = currentStep + 1;
       }
     }
@@ -679,10 +731,23 @@ export default function MatreshkaQuantum() {
 
     const newHistory = [...history, newEntry];
 
-    if (!justExitedShadow && !nextShadowMode && nextStep >= 4) {
-      nextShadowMode = true;
-      nextFrozenStep = nextStep;
-      setPhantomWins(0);
+    const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(newHistory);
+    
+    let targetProfit = SafeUnit;
+    let rawBet = (nextCdt + targetProfit) / 0.98;
+    let maxStrikeBet = initialBankroll * 0.05;
+    let isSniperRecovery = rawBet > maxStrikeBet;
+
+    if (nextShadowMode) {
+      if (triggerStrike) {
+        nextShadowMode = false;
+        justExitedShadow = true;
+      }
+    } else {
+      if (triggerPhantom || nextStep >= 4 || isSniperRecovery) {
+        nextShadowMode = true;
+        nextFrozenStep = nextStep;
+      }
     }
 
     if (nextBet > 1000000) {
@@ -743,7 +808,6 @@ export default function MatreshkaQuantum() {
     let shadow = false;
     let frozen = 0;
     let cdtVal = 0;
-    let pWins = 0;
     
     for (let i = 0; i < newHistory.length; i++) {
         const entry = newHistory[i];
@@ -755,55 +819,43 @@ export default function MatreshkaQuantum() {
 
         if (entry.outcome === 'ZERO') {
             cdtVal += entry.betAmount;
-            if (shadow) {
-                pWins = 0;
-            } else {
-                if (aStep > 0) {
-                    step = 2;
-                    aStep = 0;
-                } else {
-                    step++;
-                }
-            }
         } else if (isWin) {
-            cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.96));
+            cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.98));
             if (cdtVal < 10) cdtVal = 0;
             
-            if (shadow) {
-                pWins += 1;
-                if (pWins >= 2) {
+            if (cdtVal === 0) {
+                step = 1;
+                aStep = 0;
+                if (shadow) {
                     shadow = false;
                     justExitedShadow = true;
-                    pWins = 0;
-                    step = 1;
-                    aStep = 0;
-                }
-            } else {
-                if (cdtVal === 0) {
-                    step = 1;
-                    aStep = 0;
                 }
             }
         } else {
             cdtVal += entry.betAmount;
-            if (shadow) {
-                pWins = 0;
-            } else {
-                if (aStep > 0) {
-                    step = 2;
-                    aStep = 0;
-                } else {
-                    step++;
-                }
+            if (!shadow) {
+                step++;
             }
         }
 
-        const histWithEntry = newHistory.slice(0, i + 1);
+        const currentHistWithEntry = newHistory.slice(0, i + 1);
+        const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(currentHistWithEntry);
         
-        if (!justExitedShadow && !shadow && step >= 4) {
-            shadow = true;
-            frozen = step;
-            pWins = 0;
+        let targetProfit = SafeUnit;
+        let rawBet = (cdtVal + targetProfit) / 0.98;
+        let maxStrikeBet = initialBankroll * 0.05;
+        let isSniperRecovery = rawBet > maxStrikeBet;
+
+        if (shadow) {
+            if (triggerStrike) {
+                shadow = false;
+                justExitedShadow = true;
+            }
+        } else {
+            if (triggerPhantom || step >= 4 || isSniperRecovery) {
+                shadow = true;
+                frozen = step;
+            }
         }
 
         if (entry.betAmount > 1000000) {
@@ -811,7 +863,6 @@ export default function MatreshkaQuantum() {
             step = 1;
             aStep = 0;
             shadow = false;
-            pWins = 0;
         }
     }
     
@@ -820,7 +871,6 @@ export default function MatreshkaQuantum() {
     setIsShadowMode(shadow);
     setFrozenStep(frozen);
     setCdt(cdtVal);
-    setPhantomWins(pWins);
   };
 
   const handleTakeProfit = () => {
@@ -971,9 +1021,15 @@ export default function MatreshkaQuantum() {
           </div>
 
           {isShadowMode ? (
-             <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-               👻 SHADOW MODE: PHANTOM PROTOCOL
-             </div>
+             isSniperRecovery ? (
+               <div className="text-red-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+                 🎯 SNIPER RECOVERY: ПОИСК ИДЕАЛЬНОГО ПАТТЕРНА
+               </div>
+             ) : (
+               <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+                 👻 SHADOW MODE: PHANTOM PROTOCOL
+               </div>
+             )
           ) : attackStep > 0 ? (
              <div className="text-yellow-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🔥 РЕЖИМ АТАКИ: РЕИНВЕСТ ПРОФИТА
@@ -1141,6 +1197,21 @@ export default function MatreshkaQuantum() {
               <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Локально (15)</div>
               <div className="text-xs font-mono text-gray-300">
                 К {Math.round(getLocalSkew(history).red)}% / Ч {Math.round(getLocalSkew(history).black)}%
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Альфа-Цвет</div>
+              <div className={`text-xs font-mono font-bold ${getApexMatrix(history).alpha === 'RED' ? 'text-red-500' : getApexMatrix(history).alpha === 'BLACK' ? 'text-gray-400' : 'text-gray-500'}`}>
+                {getApexMatrix(history).alpha === 'RED' ? 'КРАСНОЕ' : getApexMatrix(history).alpha === 'BLACK' ? 'ЧЕРНОЕ' : 'НЕТ'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Макс. Серии</div>
+              <div className="text-xs font-mono text-gray-300">
+                К: {getApexMatrix(history).maxStreakRed} / Ч: {getApexMatrix(history).maxStreakBlack}
               </div>
             </div>
           </div>
