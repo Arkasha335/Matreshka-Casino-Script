@@ -403,10 +403,8 @@ export default function MatreshkaQuantum() {
     localStorage.setItem('matreshka_sessions', JSON.stringify(updatedSessions));
   };
 
-  const calculateBaseUnit = (bankroll: number) => {
-    const SafeUnit = Math.max(1000, Math.min(bankroll / 100, 1800));
-    const AggressiveUnit = Math.min(SafeUnit * 2.5, 4500);
-    return { SafeUnit, AggressiveUnit };
+  const calculateBaseUnit = (_bankroll: number) => {
+    return { SafeUnit: 1000, AggressiveUnit: 1000 };
   };
 
   if (!isClient) return null;
@@ -528,24 +526,21 @@ export default function MatreshkaQuantum() {
     serverState = 'СЛИВ';
   }
 
-  let targetProfit = SafeUnit;
-  if (serverState === 'ПИЛА' || serverState === 'ТРЕНД') {
-    if (cdt === 0) {
-      targetProfit = AggressiveUnit;
-    }
-  }
-
-  let rawBet = (cdt + targetProfit) / 0.98;
+  let rawTbb = Math.round((cdt + 1000) / 0.98);
   let maxStrikeBet = initialBankroll * 0.05;
-  let isSniperRecovery = rawBet > maxStrikeBet;
-  let nextBet = Math.max(1000, Math.round(Math.min(rawBet, maxStrikeBet)));
+  let isSniperRecovery = rawTbb > maxStrikeBet;
+  let nextBet = 1000;
   let isPhantomBet = false;
 
-  if (isShadowMode || currentStep >= 4) {
+  if (isShadowMode) {
       nextBet = 1000;
       isPhantomBet = true;
   } else if (manualBet !== null) {
       nextBet = manualBet;
+  } else if (cdt > 0) {
+      nextBet = Math.max(1000, Math.min(rawTbb, maxStrikeBet, 1000000));
+  } else {
+      nextBet = 1000;
   }
 
   if (nextBet > currentBankroll && currentBankroll > 0 && !isPhantomBet) {
@@ -558,7 +553,7 @@ export default function MatreshkaQuantum() {
 
   const isMaxLimit = nextBet >= 1000000;
 
-  const survivalSteps = targetProfit > 0 ? Math.floor(Math.log(currentBankroll / targetProfit) / Math.log(2.2)) : 0;
+  const survivalSteps = Math.floor(Math.log(currentBankroll / 1000) / Math.log(2.2));
 
   const recommendation = manualColor !== null ? manualColor : baseRecommendation;
   const recommendationText = recommendation === 'RED' ? 'КРАСНОЕ' : recommendation === 'BLACK' ? 'ЧЕРНОЕ' : 'ЗЕРО';
@@ -690,6 +685,7 @@ export default function MatreshkaQuantum() {
     let nextFrozenStep = frozenStep;
     let nextCdt = cdt;
     let justExitedShadow = false;
+    let nextPhantomWins = phantomWins;
 
     if (outcome === 'ZERO') {
       isWin = false;
@@ -697,26 +693,55 @@ export default function MatreshkaQuantum() {
       nextCdt += nextBet;
       setZeroMessage(true);
       setTimeout(() => setZeroMessage(false), 4000);
+      if (isShadowMode) {
+        nextPhantomWins = 0;
+      } else {
+        if (currentStep < 4) {
+          nextStep = currentStep + 1;
+        } else {
+          nextShadowMode = true;
+          nextFrozenStep = 4;
+          nextStep = 4;
+          nextPhantomWins = 0;
+        }
+      }
     } else if (recommendation === outcome) {
       isWin = true;
       netProfit = nextBet * 0.98; // 2% tax on win
       nextCdt = Math.max(0, nextCdt - netProfit);
       if (nextCdt < 10) nextCdt = 0;
       
-      if (nextCdt === 0) {
-        nextStep = 1;
-        nextAttackStep = 0;
-        if (isShadowMode) {
+      if (isShadowMode) {
+        nextPhantomWins += 1;
+        if (nextPhantomWins >= 2) {
           nextShadowMode = false;
           justExitedShadow = true;
+          nextPhantomWins = 0;
+          nextStep = 1;
+          nextAttackStep = 0;
+          nextCdt = 0;
+        }
+      } else {
+        if (nextCdt === 0) {
+          nextStep = 1;
+          nextAttackStep = 0;
         }
       }
     } else {
       isWin = false;
       netProfit = -nextBet;
       nextCdt += nextBet;
-      if (!isShadowMode) {
-        nextStep = currentStep + 1;
+      if (isShadowMode) {
+        nextPhantomWins = 0;
+      } else {
+        if (currentStep < 4) {
+          nextStep = currentStep + 1;
+        } else {
+          nextShadowMode = true;
+          nextFrozenStep = 4;
+          nextStep = 4;
+          nextPhantomWins = 0;
+        }
       }
     }
 
@@ -733,20 +758,21 @@ export default function MatreshkaQuantum() {
 
     const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(newHistory);
     
-    let targetProfit = SafeUnit;
-    let rawBet = (nextCdt + targetProfit) / 0.98;
-    let maxStrikeBet = initialBankroll * 0.05;
-    let isSniperRecovery = rawBet > maxStrikeBet;
+    const rawTbb = Math.round((nextCdt + 1000) / 0.98);
+    const maxStrike = initialBankroll * 0.05;
+    const isSniper = rawTbb > maxStrike;
 
     if (nextShadowMode) {
       if (triggerStrike) {
         nextShadowMode = false;
         justExitedShadow = true;
+        nextPhantomWins = 0;
       }
     } else {
-      if (triggerPhantom || nextStep >= 4 || isSniperRecovery) {
+      if (triggerPhantom || isSniper) {
         nextShadowMode = true;
         nextFrozenStep = nextStep;
+        nextPhantomWins = 0;
       }
     }
 
@@ -756,6 +782,7 @@ export default function MatreshkaQuantum() {
       nextStep = 1;
       nextAttackStep = 0;
       nextShadowMode = false;
+      nextPhantomWins = 0;
     }
 
     setHistory(newHistory);
@@ -764,6 +791,7 @@ export default function MatreshkaQuantum() {
     setIsShadowMode(nextShadowMode);
     setFrozenStep(nextFrozenStep);
     setCdt(nextCdt);
+    setPhantomWins(nextPhantomWins);
 
     const nowMs = new Date().getTime();
     const timeSinceLast = sessionLogs.length > 0 ? nowMs - sessionLogs[sessionLogs.length - 1].timestamp : 0;
@@ -808,6 +836,7 @@ export default function MatreshkaQuantum() {
     let shadow = false;
     let frozen = 0;
     let cdtVal = 0;
+    let phantomWinsVal = 0;
     
     for (let i = 0; i < newHistory.length; i++) {
         const entry = newHistory[i];
@@ -819,42 +848,72 @@ export default function MatreshkaQuantum() {
 
         if (entry.outcome === 'ZERO') {
             cdtVal += entry.betAmount;
+            if (shadow) {
+                phantomWinsVal = 0;
+            } else {
+                if (step < 4) {
+                    step++;
+                } else {
+                    shadow = true;
+                    frozen = 4;
+                    step = 4;
+                    phantomWinsVal = 0;
+                }
+            }
         } else if (isWin) {
             cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.98));
             if (cdtVal < 10) cdtVal = 0;
             
-            if (cdtVal === 0) {
-                step = 1;
-                aStep = 0;
-                if (shadow) {
+            if (shadow) {
+                phantomWinsVal++;
+                if (phantomWinsVal >= 2) {
                     shadow = false;
                     justExitedShadow = true;
+                    phantomWinsVal = 0;
+                    step = 1;
+                    aStep = 0;
+                    cdtVal = 0;
+                }
+            } else {
+                if (cdtVal === 0) {
+                    step = 1;
+                    aStep = 0;
                 }
             }
         } else {
             cdtVal += entry.betAmount;
-            if (!shadow) {
-                step++;
+            if (shadow) {
+                phantomWinsVal = 0;
+            } else {
+                if (step < 4) {
+                    step++;
+                } else {
+                    shadow = true;
+                    frozen = 4;
+                    step = 4;
+                    phantomWinsVal = 0;
+                }
             }
         }
 
         const currentHistWithEntry = newHistory.slice(0, i + 1);
         const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(currentHistWithEntry);
         
-        let targetProfit = SafeUnit;
-        let rawBet = (cdtVal + targetProfit) / 0.98;
-        let maxStrikeBet = initialBankroll * 0.05;
-        let isSniperRecovery = rawBet > maxStrikeBet;
+        const rawTbb = Math.round((cdtVal + 1000) / 0.98);
+        const maxStrike = initialBankroll * 0.05;
+        const isSniper = rawTbb > maxStrike;
 
         if (shadow) {
             if (triggerStrike) {
                 shadow = false;
                 justExitedShadow = true;
+                phantomWinsVal = 0;
             }
         } else {
-            if (triggerPhantom || step >= 4 || isSniperRecovery) {
+            if (triggerPhantom || isSniper) {
                 shadow = true;
                 frozen = step;
+                phantomWinsVal = 0;
             }
         }
 
@@ -863,6 +922,7 @@ export default function MatreshkaQuantum() {
             step = 1;
             aStep = 0;
             shadow = false;
+            phantomWinsVal = 0;
         }
     }
     
@@ -871,6 +931,7 @@ export default function MatreshkaQuantum() {
     setIsShadowMode(shadow);
     setFrozenStep(frozen);
     setCdt(cdtVal);
+    setPhantomWins(phantomWinsVal);
   };
 
   const handleTakeProfit = () => {
