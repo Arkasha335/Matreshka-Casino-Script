@@ -118,23 +118,6 @@ const calculateS = (hist: HistoryEntry[]) => {
   return spinsInStreaks / 20;
 };
 
-const calculateSDI = (history: HistoryEntry[], window = 10) => {
-  if (history.length === 0) return 0;
-  const recent = history.slice(-window);
-  const lengths: number[] = [];
-  let currentLen = 1;
-  for (let i = 1; i < recent.length; i++) {
-    if (recent[i].outcome === recent[i - 1].outcome && recent[i].outcome !== 'ZERO') {
-      currentLen++;
-    } else {
-      lengths.push(currentLen);
-      currentLen = 1;
-    }
-  }
-  lengths.push(currentLen);
-  return lengths.reduce((a, b) => a + b, 0) / lengths.length;
-};
-
 const calculateColorStreak = (hist: HistoryEntry[]) => {
   if (hist.length === 0) return 0;
   let streak = 1;
@@ -160,18 +143,96 @@ const calculateCRS = (hist: HistoryEntry[]) => {
   return null;
 };
 
-const getRecommendation = (history: HistoryEntry[], sdi: number): Outcome => {
-  if (history.length === 0) return 'RED';
-  
-  const crs = calculateCRS(history);
-  if (crs) return crs;
-
-  const lastNonZero = [...history].reverse().find(h => h.outcome !== 'ZERO')?.outcome || 'RED';
-  if (sdi > 1.5) {
-    return lastNonZero;
-  } else {
-    return lastNonZero === 'RED' ? 'BLACK' : 'RED';
+const calculateSwitchDensity = (history: HistoryEntry[], window = 20) => {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
+  if (nonZero.length < 2) return 0;
+  let switches = 0;
+  for (let i = 1; i < nonZero.length; i++) {
+    if (nonZero[i].outcome !== nonZero[i - 1].outcome) switches++;
   }
+  return switches / (nonZero.length - 1);
+};
+
+const getGlobalSkew = (history: HistoryEntry[]) => {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO');
+  if (nonZero.length === 0) return { red: 50, black: 50, dominant: null };
+  const redCount = nonZero.filter(h => h.outcome === 'RED').length;
+  const redPct = (redCount / nonZero.length) * 100;
+  const blackPct = 100 - redPct;
+  let dominant: Outcome | null = null;
+  if (Math.abs(redPct - blackPct) > 10) {
+    dominant = redPct > blackPct ? 'RED' : 'BLACK';
+  }
+  return { red: redPct, black: blackPct, dominant };
+};
+
+const getLocalSkew = (history: HistoryEntry[], window = 15) => {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
+  if (nonZero.length === 0) return { red: 50, black: 50, dominant: null };
+  const redCount = nonZero.filter(h => h.outcome === 'RED').length;
+  const redPct = (redCount / nonZero.length) * 100;
+  const blackPct = 100 - redPct;
+  let dominant: Outcome | null = null;
+  if (redCount >= 10) dominant = 'RED';
+  else if (nonZero.length - redCount >= 10) dominant = 'BLACK';
+  return { red: redPct, black: blackPct, dominant };
+};
+
+const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendation: Outcome, confidence: number, state: string } => {
+  if (history.length === 0) return { recommendation: 'RED', confidence: 50, state: 'ТРЕНД' };
+
+  const globalSkew = getGlobalSkew(history);
+  const localSkew = getLocalSkew(history);
+  const switchDensity = calculateSwitchDensity(history);
+  
+  const nonZero = history.filter(h => h.outcome !== 'ZERO');
+  
+  let state = 'ТРЕНД';
+  if (switchDensity > 0.6) state = 'ПИЛА';
+  
+  const last3 = history.slice(-3);
+  const hasZeroInLast3 = last3.some(h => h.outcome === 'ZERO');
+  if (hasZeroInLast3 || (localSkew.dominant && globalSkew.dominant && localSkew.dominant !== globalSkew.dominant)) {
+    state = 'ТУРБУЛЕНТНОСТЬ';
+  }
+
+  let recommendation: Outcome = 'RED';
+  let matrixBonus = 0;
+
+  if (nonZero.length < 3) {
+    recommendation = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
+  } else {
+    const L1 = nonZero[nonZero.length - 1].outcome;
+    const L2 = nonZero[nonZero.length - 2].outcome;
+    const L3 = nonZero[nonZero.length - 3].outcome;
+
+    if (L1 === L2 && L2 === L3) {
+      if (switchDensity > 0.6) {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+        matrixBonus = 15;
+      } else {
+        recommendation = L1;
+        matrixBonus = 10;
+      }
+    } else {
+      if (localSkew.dominant) {
+        recommendation = localSkew.dominant;
+        matrixBonus = 5;
+      } else {
+        if (L1 !== L2 && L2 !== L3) {
+          recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+        } else {
+          recommendation = L1;
+        }
+      }
+    }
+  }
+
+  const localPct = recommendation === 'RED' ? localSkew.red : localSkew.black;
+  let confidence = 50 + (localPct - 50) + matrixBonus;
+  confidence = Math.min(99, Math.max(1, Math.round(confidence)));
+
+  return { recommendation, confidence, state };
 };
 
 const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outcome }) {
@@ -208,6 +269,7 @@ export default function MatreshkaQuantum() {
   const [isShadowMode, setIsShadowMode] = useState(false);
   const [frozenStep, setFrozenStep] = useState<number>(0);
   const [cdt, setCdt] = useState<number>(0);
+  const [phantomWins, setPhantomWins] = useState<number>(0);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -239,6 +301,7 @@ export default function MatreshkaQuantum() {
         setIsShadowMode(parsed.isShadowMode || false);
         setFrozenStep(parsed.frozenStep || 0);
         setCdt(parsed.cdt || 0);
+        setPhantomWins(parsed.phantomWins || 0);
         if (parsed.sessionStartTime) setSessionStartTime(parsed.sessionStartTime);
       } catch (e) {
         console.error("Failed to parse saved state", e);
@@ -255,10 +318,10 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_state', JSON.stringify({
-        initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt
+        initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt, phantomWins
       }));
     }
-  }, [initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt]);
+  }, [initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt, phantomWins]);
 
   const saveCurrentSession = () => {
     if (history.length === 0) return;
@@ -382,26 +445,35 @@ export default function MatreshkaQuantum() {
 
   const { SafeUnit, AggressiveUnit } = calculateBaseUnit(currentBankroll);
 
-  const recentBets = history.filter(h => h.betAmount > 0).slice(-20);
+  const recentBets = history.filter(h => h.betAmount > 0).slice(-12);
   const recentWins = recentBets.filter(h => h.isWin).length;
   const winrate = recentBets.length > 0 ? recentWins / recentBets.length : 0;
 
   let serverPhase = 'АНАЛИЗ ТРЕНДА';
-  if (recentBets.length >= 5) {
+  if (recentBets.length >= 3) {
     if (winrate > 0.45) serverPhase = 'СТАБИЛЬНО';
     else if (winrate < 0.30) serverPhase = 'СЛИВ';
     else serverPhase = 'НОРМА';
   }
 
-  const sdi = calculateSDI(history);
-  const isWhipsaw = sdi > 1.5;
-
-  let targetProfit = SafeUnit;
-  if (serverPhase === 'СТАБИЛЬНО') {
-    targetProfit = AggressiveUnit;
+  const last10 = history.slice(-10);
+  const zeroCountLast10 = last10.filter(h => h.outcome === 'ZERO').length;
+  if (zeroCountLast10 >= 2) {
+    serverPhase = 'СЛИВ';
   }
 
-  let nextBet = Math.round((cdt + targetProfit) / 0.96);
+  const { recommendation: baseRecommendation, confidence: confidenceValue, state: serverState } = getRecommendationAndConfidence(history);
+
+  let targetProfit = SafeUnit;
+  if (serverState === 'ПИЛА' || serverState === 'ТРЕНД') {
+    if (cdt === 0) {
+      targetProfit = AggressiveUnit;
+    }
+  }
+
+  let rawBet = (cdt + targetProfit) / 0.98;
+  let maxStrikeBet = initialBankroll * 0.05;
+  let nextBet = Math.max(1000, Math.round(Math.min(rawBet, maxStrikeBet)));
   let isPhantomBet = false;
 
   if (isShadowMode || currentStep >= 4) {
@@ -423,14 +495,8 @@ export default function MatreshkaQuantum() {
 
   const survivalSteps = targetProfit > 0 ? Math.floor(Math.log(currentBankroll / targetProfit) / Math.log(2.2)) : 0;
 
-  const baseRecommendation = getRecommendation(history, sdi);
   const recommendation = manualColor !== null ? manualColor : baseRecommendation;
   const recommendationText = recommendation === 'RED' ? 'КРАСНОЕ' : recommendation === 'BLACK' ? 'ЧЕРНОЕ' : 'ЗЕРО';
-
-  const S = calculateS(history);
-  let confidence = 'Низкая';
-  if (S >= 0.35) confidence = 'Высокая';
-  else if (S >= 0.15) confidence = 'Средняя';
 
   const durationMs = now - sessionStartTime;
   const profitPerHour = durationMs > 0 ? (profit / (durationMs / 3600000)) : 0;
@@ -563,45 +629,30 @@ export default function MatreshkaQuantum() {
     if (outcome === 'ZERO') {
       isWin = false;
       netProfit = -nextBet;
-      if (!isShadowMode) {
-          nextStep = 1;
-          nextAttackStep = 0;
-      }
       nextCdt += nextBet;
+      if (isShadowMode) {
+        setPhantomWins(0);
+      }
       setZeroMessage(true);
       setTimeout(() => setZeroMessage(false), 4000);
     } else if (recommendation === outcome) {
       isWin = true;
-      netProfit = nextBet * 0.98; // 2% tax on win
+      netProfit = nextBet * 0.96; // 4% tax on win
+      nextCdt = Math.max(0, nextCdt - netProfit);
+      if (nextCdt < 10) nextCdt = 0;
       
       if (isShadowMode) {
-        nextShadowMode = false;
-        justExitedShadow = true;
-        nextStep = 1;
-        nextAttackStep = 0;
-        nextCdt = Math.max(0, nextCdt - 960);
+        const newPhantomWins = phantomWins + 1;
+        setPhantomWins(newPhantomWins);
+        if (newPhantomWins >= 2) {
+          nextShadowMode = false;
+          justExitedShadow = true;
+          setPhantomWins(0);
+          nextStep = 1;
+          nextAttackStep = 0;
+        }
       } else {
-        nextCdt = 0;
-        if (mode === 'QUANT_YIELD') {
-          const last3 = history.slice(-3);
-          const isTrend = last3.length === 3 && last3.every(h => h.outcome === outcome);
-          
-          if (attackStep > 0) {
-              if (attackStep < 3) {
-                  nextAttackStep = attackStep + 1;
-                  nextStep = 1;
-              } else {
-                  nextAttackStep = 0;
-                  nextStep = 1;
-              }
-          } else if (isTrend) {
-              nextAttackStep = 1;
-              nextStep = 1;
-          } else {
-              nextAttackStep = 0;
-              nextStep = 1;
-          }
-        } else {
+        if (nextCdt === 0) {
           nextStep = 1;
           nextAttackStep = 0;
         }
@@ -610,13 +661,10 @@ export default function MatreshkaQuantum() {
       isWin = false;
       netProfit = -nextBet;
       nextCdt += nextBet;
-      if (!isShadowMode) {
-        if (attackStep > 0) {
-            nextStep = 2;
-            nextAttackStep = 0;
-        } else {
-            nextStep = currentStep + 1;
-        }
+      if (isShadowMode) {
+        setPhantomWins(0);
+      } else {
+        nextStep = currentStep + 1;
       }
     }
 
@@ -630,16 +678,11 @@ export default function MatreshkaQuantum() {
     };
 
     const newHistory = [...history, newEntry];
-    const colorStreak = calculateColorStreak(newHistory);
-    
-    const last3 = newHistory.slice(-3);
-    const is3Losses = last3.length === 3 && last3.every(h => !h.isWin);
 
-    if (!justExitedShadow && (nextStep >= 4 || is3Losses || colorStreak >= 4)) {
-      if (!nextShadowMode) {
-        nextShadowMode = true;
-        nextFrozenStep = nextStep;
-      }
+    if (!justExitedShadow && !nextShadowMode && nextStep >= 4) {
+      nextShadowMode = true;
+      nextFrozenStep = nextStep;
+      setPhantomWins(0);
     }
 
     if (nextBet > 1000000) {
@@ -700,56 +743,52 @@ export default function MatreshkaQuantum() {
     let shadow = false;
     let frozen = 0;
     let cdtVal = 0;
+    let pWins = 0;
     
     for (let i = 0; i < newHistory.length; i++) {
         const entry = newHistory[i];
         const currentHist = newHistory.slice(0, i);
-        const sdi = calculateSDI(currentHist);
-        const rec = getRecommendation(currentHist, sdi);
+        const { recommendation: rec } = getRecommendationAndConfidence(currentHist);
         
         let isWin = (entry.outcome === rec && entry.outcome !== 'ZERO');
         let justExitedShadow = false;
 
         if (entry.outcome === 'ZERO') {
-            step = 1;
-            aStep = 0;
             cdtVal += entry.betAmount;
-        } else if (isWin) {
             if (shadow) {
-                shadow = false;
-                justExitedShadow = true;
-                step = 1;
-                aStep = 0;
-                cdtVal = Math.max(0, cdtVal - 960);
+                pWins = 0;
             } else {
-                cdtVal = 0;
-                if (mode === 'QUANT_YIELD') {
-                    const last3 = currentHist.slice(-3);
-                    const isTrend = last3.length === 3 && last3.every(h => h.outcome === entry.outcome);
-                    
-                    if (aStep > 0) {
-                        if (aStep < 3) {
-                            aStep++;
-                            step = 1;
-                        } else {
-                            aStep = 0;
-                            step = 1;
-                        }
-                    } else if (isTrend) {
-                        aStep = 1;
-                        step = 1;
-                    } else {
-                        aStep = 0;
-                        step = 1;
-                    }
+                if (aStep > 0) {
+                    step = 2;
+                    aStep = 0;
                 } else {
+                    step++;
+                }
+            }
+        } else if (isWin) {
+            cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.96));
+            if (cdtVal < 10) cdtVal = 0;
+            
+            if (shadow) {
+                pWins += 1;
+                if (pWins >= 2) {
+                    shadow = false;
+                    justExitedShadow = true;
+                    pWins = 0;
+                    step = 1;
+                    aStep = 0;
+                }
+            } else {
+                if (cdtVal === 0) {
                     step = 1;
                     aStep = 0;
                 }
             }
         } else {
             cdtVal += entry.betAmount;
-            if (!shadow) {
+            if (shadow) {
+                pWins = 0;
+            } else {
                 if (aStep > 0) {
                     step = 2;
                     aStep = 0;
@@ -760,15 +799,11 @@ export default function MatreshkaQuantum() {
         }
 
         const histWithEntry = newHistory.slice(0, i + 1);
-        const colorStreak = calculateColorStreak(histWithEntry);
-        const last3 = histWithEntry.slice(-3);
-        const is3Losses = last3.length === 3 && last3.every(h => !h.isWin);
         
-        if (!justExitedShadow && (step >= 4 || is3Losses || colorStreak >= 4)) {
-            if (!shadow) {
-                shadow = true;
-                frozen = step;
-            }
+        if (!justExitedShadow && !shadow && step >= 4) {
+            shadow = true;
+            frozen = step;
+            pWins = 0;
         }
 
         if (entry.betAmount > 1000000) {
@@ -776,6 +811,7 @@ export default function MatreshkaQuantum() {
             step = 1;
             aStep = 0;
             shadow = false;
+            pWins = 0;
         }
     }
     
@@ -784,6 +820,7 @@ export default function MatreshkaQuantum() {
     setIsShadowMode(shadow);
     setFrozenStep(frozen);
     setCdt(cdtVal);
+    setPhantomWins(pWins);
   };
 
   const handleTakeProfit = () => {
@@ -911,12 +948,6 @@ export default function MatreshkaQuantum() {
       </header>
 
       <main className="max-w-md mx-auto p-4 space-y-6">
-        {isWhipsaw && (
-          <div className="bg-red-900/50 border border-red-500/50 rounded-xl p-4 text-center animate-pulse">
-            <div className="text-red-400 font-black tracking-widest uppercase text-sm">ОБНАРУЖЕН ХЛЫСТ</div>
-            <div className="text-red-300/80 text-xs mt-1">МИНИМАЛЬНЫЕ СТАВКИ</div>
-          </div>
-        )}
 
         {/* Main Display */}
         <motion.div
@@ -930,13 +961,13 @@ export default function MatreshkaQuantum() {
         >
           <div className="absolute top-4 right-5 text-right">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Состояние сервера</div>
-            <div className={`text-xs font-black tracking-widest uppercase ${isShadowMode ? 'text-purple-400' : isWhipsaw ? 'text-blue-400' : 'text-orange-400'}`}>
-              {isShadowMode ? 'ФАНТОМ' : isWhipsaw ? 'ТРЕНД' : 'ЗЕБРА'}
+            <div className={`text-xs font-black tracking-widest uppercase ${isShadowMode ? 'text-purple-400' : serverState === 'ТРЕНД' ? 'text-blue-400' : serverState === 'ТУРБУЛЕНТНОСТЬ' ? 'text-yellow-400' : 'text-orange-400'}`}>
+              {isShadowMode ? 'СЛИВ' : serverState}
             </div>
           </div>
           <div className={`absolute top-4 left-5 font-black tracking-widest text-sm
             ${currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-yellow-500' : 'text-red-500'}`}>
-            {attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ${currentStep}`}
+            {isShadowMode ? `ШАГ: ${currentStep} (ФАНТОМ)` : attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
           </div>
 
           {isShadowMode ? (
@@ -1051,6 +1082,20 @@ export default function MatreshkaQuantum() {
           )}
         </AnimatePresence>
 
+        {/* CDT Monitor */}
+        <div className={`p-4 rounded-2xl border-2 flex flex-col items-center justify-center transition-colors ${
+          cdt === 0 
+            ? 'bg-emerald-900/20 border-emerald-500/30' 
+            : 'bg-red-900/20 border-red-500/30'
+        }`}>
+          <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold mb-1">Актуальный долг (CDT)</div>
+          <div className={`text-2xl font-black tracking-wider ${
+            cdt === 0 ? 'text-emerald-400' : 'text-red-400'
+          }`}>
+            {Math.round(cdt).toLocaleString()} ₽
+          </div>
+        </div>
+
         {/* Input Zone (Moved up) */}
         <div className="pt-4 pb-2">
           <div className="text-center text-gray-500 text-[10px] font-bold tracking-widest uppercase mb-3">Ввод результата (Что выпало?)</div>
@@ -1076,14 +1121,30 @@ export default function MatreshkaQuantum() {
           <div className="flex justify-between items-center">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Аналитика потока</div>
             <div className={`text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-black border ${
-              confidence === 'Высокая' ? 'text-emerald-400 border-emerald-500/30' :
-              confidence === 'Средняя' ? 'text-yellow-500 border-yellow-500/30' :
+              isShadowMode ? 'text-red-500 border-red-500/30' :
+              confidenceValue > 60 ? 'text-emerald-400 border-emerald-500/30' :
+              confidenceValue >= 50 ? 'text-yellow-500 border-yellow-500/30' :
               'text-red-500 border-red-500/30'
             }`}>
-              Уверенность: {confidence}
+              Уверенность: {isShadowMode ? 'ФАНТОМ' : `${confidenceValue}%`}
             </div>
           </div>
           
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Глобально</div>
+              <div className="text-xs font-mono text-gray-300">
+                К {Math.round(getGlobalSkew(history).red)}% / Ч {Math.round(getGlobalSkew(history).black)}%
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">Локально (15)</div>
+              <div className="text-xs font-mono text-gray-300">
+                К {Math.round(getLocalSkew(history).red)}% / Ч {Math.round(getLocalSkew(history).black)}%
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Распределение</div>
@@ -1213,6 +1274,8 @@ export default function MatreshkaQuantum() {
                   setSessionLogs([]);
                   setIsShadowMode(false);
                   setFrozenStep(0);
+                  setCdt(0);
+                  setPhantomWins(0);
                   localStorage.removeItem('matreshka_state');
                 }}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
@@ -1270,6 +1333,7 @@ export default function MatreshkaQuantum() {
                     setIsShadowMode(false);
                     setFrozenStep(0);
                     setCdt(0);
+                    setPhantomWins(0);
                     localStorage.removeItem('matreshka_state');
                   }}
                   className="flex-1 bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
