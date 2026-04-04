@@ -5,15 +5,25 @@ import { SignJWT } from 'jose';
 
 const SECRET = process.env.JWT_SECRET || 'matreshka-quantum-secret-2026';
 
+interface LicenseEntry {
+  key: string;
+  hash: string;
+  label: string;
+  createdAt: number;
+  active: boolean;
+  lastUsed: number | null;
+  sessionsCount: number;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { key } = await req.json();
     const inputHash = hashKey(key);
 
     const data = await get('keys');
-    const keys = Array.isArray(data) ? data : [];
+    const keys: LicenseEntry[] = Array.isArray(data) ? (data as LicenseEntry[]) : [];
 
-    const license = keys.find((l: any) => l.hash === inputHash && l.active === true);
+    const license = keys.find((l) => l.hash === inputHash && l.active === true);
 
     if (!license) {
       return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
