@@ -5,7 +5,7 @@ import { get } from '@vercel/edge-config';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin-default';
 const API_TOKEN = process.env.VERCEL_API_TOKEN;
 const TEAM_ID = process.env.VERCEL_TEAM_ID;
-const EDGE_CONFIG_ID = process.env.EDGE_CONFIG?.split('/')[4]?.split('?')[0] || 'ecfg_1ueolsdjxfebxapzihx0yhsq84ug';
+const EDGE_CONFIG_ID = 'ecfg_1ueolsdjxfebxapzihx0yhsq84ug';
 
 interface LicenseEntry {
   key: string;
@@ -23,17 +23,33 @@ function verifyAdmin(req: NextRequest): boolean {
   return auth.slice(7) === ADMIN_SECRET;
 }
 
-async function edgeConfigWrite(items: Record<string, unknown>) {
-  const url = `https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items?teamId=${TEAM_ID}`;
+async function edgeConfigWrite(newKeys: LicenseEntry[]) {
+  let url = `https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items`;
+  if (TEAM_ID) {
+    url += `?teamId=${TEAM_ID}`;
+  }
+
+  const body = JSON.stringify({
+    items: {
+      keys: newKeys,
+    },
+  });
+
   const res = await fetch(url, {
     method: 'PATCH',
     headers: {
       'Authorization': `Bearer ${API_TOKEN}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ items }),
+    body,
   });
-  if (!res.ok) throw new Error(`Edge Config write failed: ${res.status}`);
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Edge Config write failed: ${res.status} ${errText}`);
+  }
+
+  return res;
 }
 
 export async function GET(req: NextRequest) {
@@ -42,8 +58,8 @@ export async function GET(req: NextRequest) {
     const data = await get('keys');
     const keys: LicenseEntry[] = Array.isArray(data) ? (data as unknown as LicenseEntry[]) : [];
     return NextResponse.json({ keys });
-  } catch {
-    return NextResponse.json({ error: 'Read failed' }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json({ error: 'Read failed: ' + (e.message || String(e)) }, { status: 500 });
   }
 }
 
@@ -58,10 +74,12 @@ export async function POST(req: NextRequest) {
       key, hash, label: label || 'Unnamed',
       createdAt: Date.now(), active: true, lastUsed: null, sessionsCount: 0
     };
-    await edgeConfigWrite({ keys: [...existing, newEntry] });
+    const allKeys = [...existing, newEntry];
+    await edgeConfigWrite(allKeys);
     return NextResponse.json({ key, label });
-  } catch {
-    return NextResponse.json({ error: 'Write failed' }, { status: 500 });
+  } catch (e: any) {
+    console.error('License POST error:', e.message);
+    return NextResponse.json({ error: 'Write failed: ' + e.message }, { status: 500 });
   }
 }
 
@@ -71,10 +89,10 @@ export async function PATCH(req: NextRequest) {
     const { hash: targetHash, active } = await req.json();
     const existing: LicenseEntry[] = (await get('keys') as unknown as LicenseEntry[]) || [];
     const updated = existing.map((l) => l.hash === targetHash ? { ...l, active } : l);
-    await edgeConfigWrite({ keys: updated });
+    await edgeConfigWrite(updated);
     return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: 'Update failed' }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json({ error: 'Update failed: ' + e.message }, { status: 500 });
   }
 }
 
@@ -84,9 +102,9 @@ export async function DELETE(req: NextRequest) {
     const { hash: targetHash } = await req.json();
     const existing: LicenseEntry[] = (await get('keys') as unknown as LicenseEntry[]) || [];
     const updated = existing.filter((l) => l.hash !== targetHash);
-    await edgeConfigWrite({ keys: updated });
+    await edgeConfigWrite(updated);
     return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: 'Delete failed' }, { status: 500 });
+  } catch (e: any) {
+    return NextResponse.json({ error: 'Delete failed: ' + e.message }, { status: 500 });
   }
 }
