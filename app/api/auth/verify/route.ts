@@ -10,7 +10,6 @@ export async function POST(req: NextRequest) {
     const { key } = await req.json();
     const inputHash = hashKey(key);
 
-    // Читаем из Edge Config
     const data = await get('keys');
     const keys = Array.isArray(data) ? data : [];
 
@@ -19,10 +18,6 @@ export async function POST(req: NextRequest) {
     if (!license) {
       return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
     }
-
-    // Обновляем lastUsed (запись через API, здесь только чтение для верификации)
-    // Для простоты не обновляем lastUsed при каждом входе, чтобы не нагружать API
-    // Или можно добавить асинхронное обновление в фоне
 
     const token = await new SignJWT({ key: inputHash, label: license.label })
       .setProtectedHeader({ alg: 'HS256' })

@@ -1,49 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { hashKey } from '@/lib/license-gen';
-import { get } from '@vercel/edge-config';
-import { SignJWT } from 'jose';
-
-const SECRET = process.env.JWT_SECRET || 'matreshka-quantum-secret-2026';
-
-export async function POST(req: NextRequest) {
-  try {
-    const { key } = await req.json();
-    const inputHash = hashKey(key);
-
-    // Читаем из Edge Config
-    const data = await get('keys');
-    const keys = Array.isArray(data) ? data : [];
-
-    const license = keys.find((l: any) => l.hash === inputHash && l.active === true);
-
-    if (!license) {
-      return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
-    }
-
-    // Обновляем lastUsed (запись через API, здесь только чтение для верификации)
-    // Для простоты не обновляем lastUsed при каждом входе, чтобы не нагружать API
-    // Или можно добавить асинхронное обновление в фоне
-
-    const token = await new SignJWT({ key: inputHash, label: license.label })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime('24h')
-      .sign(new TextEncoder().encode(SECRET));
-
-    return NextResponse.json({ valid: true, token, label: license.label });
-  } catch (error) {
-    console.error('Auth Error:', error);
-    return NextResponse.json({ valid: false, error: 'Server error' }, { status: 500 });
-  }
-}
-app/api/license/route.ts
-import { NextRequest, NextResponse } from 'next/server';
 import { generateLicenseKey, hashKey } from '@/lib/license-gen';
 import { get } from '@vercel/edge-config';
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin-default';
 const API_TOKEN = process.env.VERCEL_API_TOKEN;
 const TEAM_ID = process.env.VERCEL_TEAM_ID;
-const EDGE_CONFIG_ID = 'ecfg_1ueolsdjxfebxapzihx0yhsq84ug';
+const EDGE_CONFIG_ID = process.env.EDGE_CONFIG?.split('/')[4]?.split('?')[0] || 'ecfg_1ueolsdjxfebxapzihx0yhsq84ug';
 
 function verifyAdmin(req: NextRequest): boolean {
   const auth = req.headers.get('authorization');
@@ -80,13 +42,11 @@ export async function POST(req: NextRequest) {
     const { label } = await req.json();
     const key = generateLicenseKey();
     const hash = hashKey(key);
-    
     const existing = (await get('keys')) || [];
     const newEntry = {
       key, hash, label: label || 'Unnamed',
       createdAt: Date.now(), active: true, lastUsed: null, sessionsCount: 0
     };
-    
     await edgeConfigWrite({ keys: [...existing, newEntry] });
     return NextResponse.json({ key, label });
   } catch (e) {
