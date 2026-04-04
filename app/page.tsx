@@ -242,6 +242,28 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
   let triggerPhantom = false;
   let triggerStrike = false;
 
+  // === MICRO-PATTERN DETECTOR (MPD) ===
+  if (nonZero.length >= 4) {
+    const L1 = nonZero[nonZero.length - 1].outcome;
+    const L2 = nonZero[nonZero.length - 2].outcome;
+    const L3 = nonZero[nonZero.length - 3].outcome;
+    const L4 = nonZero[nonZero.length - 4].outcome;
+
+    if (L1 === L3 && L2 === L4 && L1 !== L2) {
+      recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+      confidence = 82;
+      state = 'ЭХО-ПАТТЕРН';
+      return { recommendation, confidence, state, triggerPhantom: false, triggerStrike: false };
+    }
+
+    if (L1 === L2 && L2 === L3 && L4 !== L1) {
+      recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+      confidence = 78;
+      state = 'ВОЛНА (СЛОМ СЕРИИ)';
+      return { recommendation, confidence, state, triggerPhantom: false, triggerStrike: true };
+    }
+  }
+
   if (nonZero.length < 2) {
     recommendation = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
     return { recommendation, confidence, state, triggerPhantom, triggerStrike };
@@ -309,6 +331,7 @@ const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outc
 
 export default function MatreshkaQuantum() {
   const [isClient, setIsClient] = useState(false);
+  const [userLabel, setUserLabel] = useState<string>('');
   const [initialBankroll, setInitialBankroll] = useState<number>(0);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [currentStep, setCurrentStep] = useState<number>(1);
@@ -316,7 +339,6 @@ export default function MatreshkaQuantum() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [setupVal, setSetupVal] = useState('');
   const [zeroMessage, setZeroMessage] = useState(false);
-  const [mode, setMode] = useState<'SAFE' | 'QUANT_YIELD'>('SAFE');
   const [attackStep, setAttackStep] = useState<number>(0);
   const [sessionStartTime, setSessionStartTime] = useState<number>(() => Date.now());
   const [now, setNow] = useState<number>(() => Date.now());
@@ -349,6 +371,18 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsClient(true);
+
+    // Читаем label из cookie
+    const cookies = document.cookie.split('; ').find(r => r.startsWith('mq_token='));
+    if (cookies) {
+      const token = cookies.split('=')[1];
+      try {
+        // Декодируем JWT payload без верификации (только для UI)
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        setUserLabel(payload.label);
+      } catch {}
+    }
+
     const saved = localStorage.getItem('matreshka_state');
     if (saved) {
       try {
@@ -356,7 +390,6 @@ export default function MatreshkaQuantum() {
         setInitialBankroll(parsed.initialBankroll || 0);
         setHistory(parsed.history || []);
         setCurrentStep(parsed.currentStep || 1);
-        setMode(parsed.mode || 'SAFE');
         setAttackStep(parsed.attackStep || 0);
         setIsShadowMode(parsed.isShadowMode || false);
         setFrozenStep(parsed.frozenStep || 0);
@@ -378,10 +411,10 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_state', JSON.stringify({
-        initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt, phantomWins
+        initialBankroll, history, currentStep, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt, phantomWins
       }));
     }
-  }, [initialBankroll, history, currentStep, mode, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt, phantomWins]);
+  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt, phantomWins]);
 
   const saveCurrentSession = () => {
     if (history.length === 0) return;
@@ -423,7 +456,7 @@ export default function MatreshkaQuantum() {
           className="max-w-md w-full bg-gray-900 p-8 rounded-2xl border border-gray-800 shadow-2xl"
         >
           <h1 className="text-2xl font-black text-white mb-2 text-center tracking-widest uppercase">Matreshka Quantum</h1>
-          <p className="text-gray-500 text-center text-sm mb-8">Движок прогрессии 2.2x</p>
+          <p className="text-gray-500 text-center text-sm mb-8">Quantum Strike Engine v10.0</p>
           <div className="space-y-6">
             <div>
               <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Ваш Баланс (₽)</label>
@@ -442,10 +475,10 @@ export default function MatreshkaQuantum() {
                   <Info className="text-emerald-400 shrink-0 mt-0.5" size={18} />
                   <div>
                     <p className="text-sm text-gray-300 mb-1">
-                      Базовая ставка: <span className="font-bold text-white">{Math.round(SafeUnit).toLocaleString('ru-RU')} ₽</span>
+                      Базовая ставка: <span className="font-bold text-white">1,000 ₽</span>
                     </p>
                     <p className="text-sm text-gray-300 mb-1">
-                      Агрессивная ставка: <span className="font-bold text-yellow-500">{Math.round(AggressiveUnit).toLocaleString('ru-RU')} ₽</span>
+                      SNIPER: <span className="font-bold text-yellow-500">TBB × 1.3 (шаг ≥ 2)</span>
                     </p>
                     <p className="text-xs text-gray-400 mt-2">
                       Ваш баланс выдержит <span className="font-bold text-emerald-400">{maxSteps}</span> шагов прогрессии.
@@ -538,7 +571,10 @@ export default function MatreshkaQuantum() {
   } else if (manualBet !== null) {
       nextBet = manualBet;
   } else if (cdt > 0) {
-      nextBet = Math.max(1000, Math.min(rawTbb, maxStrikeBet, 1000000));
+      // SNIPER: при шаге >= 2 увеличиваем ставку на 30%
+      let sniperMultiplier = currentStep >= 2 ? 1.3 : 1.0;
+      let sniperBet = Math.round(rawTbb * sniperMultiplier);
+      nextBet = Math.max(1000, Math.min(sniperBet, maxStrikeBet, 1000000));
   } else {
       nextBet = 1000;
   }
@@ -719,7 +755,9 @@ export default function MatreshkaQuantum() {
           nextPhantomWins = 0;
           nextStep = 1;
           nextAttackStep = 0;
-          nextCdt = 0;
+          if (nextCdt < 3000) {
+            nextCdt = 0;
+          }
         }
       } else {
         if (nextCdt === 0) {
@@ -1037,20 +1075,18 @@ export default function MatreshkaQuantum() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-800">
-              <button 
-                onClick={() => setMode('SAFE')}
-                className={`px-2 py-1 text-[9px] sm:text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${mode === 'SAFE' ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-gray-300'}`}
-              >
-                🛡️ SAFE
-              </button>
-              <button 
-                onClick={() => setMode('QUANT_YIELD')}
-                className={`px-2 py-1 text-[9px] sm:text-[10px] font-bold uppercase tracking-widest rounded-md transition-colors ${mode === 'QUANT_YIELD' ? 'bg-yellow-500/20 text-yellow-500' : 'text-gray-500 hover:text-gray-300'}`}
-              >
-                🔥 YIELD
-              </button>
-            </div>
+            {userLabel && (
+              <div className="text-[10px] text-gray-600 font-mono">{userLabel}</div>
+            )}
+            <button
+              onClick={() => {
+                document.cookie = 'mq_token=; path=/; max-age=0';
+                window.location.href = '/login';
+              }}
+              className="text-gray-500 hover:text-red-500 text-xs font-bold uppercase"
+            >
+              Выход
+            </button>
             <button onClick={() => setShowResetConfirm(true)} className="text-gray-500 hover:text-white transition-colors p-2 bg-gray-900 rounded-lg border border-gray-800">
               <RotateCcw size={18} />
             </button>
@@ -1067,7 +1103,6 @@ export default function MatreshkaQuantum() {
           animate={{ scale: 1, opacity: 1 }}
           className={`relative overflow-hidden rounded-3xl p-8 border-2 flex flex-col items-center justify-center min-h-[240px] shadow-2xl
               ${isShadowMode ? 'bg-black border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] animate-pulse' :
-              mode === 'QUANT_YIELD' ? 'bg-black border-emerald-500 shadow-[0_0_40px_rgba(16,185,129,0.2)]' :
               'bg-black border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.2)]'}`}
         >
           <div className="absolute top-4 right-5 text-right">
@@ -1094,6 +1129,10 @@ export default function MatreshkaQuantum() {
           ) : attackStep > 0 ? (
              <div className="text-yellow-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🔥 РЕЖИМ АТАКИ: РЕИНВЕСТ ПРОФИТА
+             </div>
+          ) : cdt > 0 && currentStep >= 2 && !isShadowMode ? (
+             <div className="text-yellow-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+               🎯 SNIPER АКТИВЕН: ×1.3
              </div>
           ) : (
              <div className="text-gray-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4">СЛЕДУЮЩИЙ ХОД</div>
@@ -1227,6 +1266,10 @@ export default function MatreshkaQuantum() {
               ЧЕРНОЕ
             </button>
           </div>
+          
+          <div className="text-center text-gray-600 text-[10px] font-bold mt-2">
+            ⏱ Цель: 8-10 сек между спинами | Текущий темп: {sessionLogs.length > 1 ? Math.round(sessionLogs.slice(-10).reduce((acc, l, i, arr) => i > 0 ? acc + (arr[i].time_since_last_spin || 0) : 0, 0) / Math.min(9, sessionLogs.length - 1) / 1000) : 0} сек
+          </div>
         </div>
 
         <button onClick={handleUndo} disabled={history.length === 0} className="w-full py-4 rounded-2xl border border-gray-800 text-gray-400 hover:text-white hover:bg-gray-900 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none uppercase tracking-widest text-xs font-bold">
@@ -1343,17 +1386,16 @@ export default function MatreshkaQuantum() {
         {/* Risk Meter */}
         <div className="w-full bg-gray-900/80 rounded-2xl p-5 border border-gray-800">
           <div className="flex justify-between items-center text-[10px] font-bold text-gray-500 mb-3 tracking-widest uppercase">
-            <span>Безопасно</span>
-            <span className="text-emerald-400">ЗАПАС ПРОЧНОСТИ: {survivalSteps} ШАГОВ</span>
-            <span className="text-red-500">Критически</span>
+            <span>Запас прочности</span>
+            <span className="text-emerald-400">{survivalSteps} шагов до ликвидации</span>
           </div>
           <div className="flex gap-1.5 h-3">
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => {
+            {[1, 2, 3, 4].map(i => {
               let bgColor = 'bg-gray-800';
               if (i <= currentStep) {
-                if (i <= 3) bgColor = 'bg-emerald-500';
-                else if (i <= 6) bgColor = 'bg-yellow-500';
-                else bgColor = 'bg-red-500';
+                if (i <= 2) bgColor = 'bg-emerald-500';
+                else if (i === 3) bgColor = 'bg-yellow-500';
+                else bgColor = 'bg-red-500 animate-pulse';
               }
               return (
                 <div key={i} className={`flex-1 rounded-sm ${bgColor} transition-colors duration-300`} />
