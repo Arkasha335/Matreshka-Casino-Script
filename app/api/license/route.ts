@@ -30,9 +30,13 @@ async function edgeConfigWrite(newKeys: LicenseEntry[]) {
   }
 
   const body = JSON.stringify({
-    items: {
-      keys: newKeys,
-    },
+    items: [
+      {
+        operation: 'upsert',
+        key: 'keys',
+        value: newKeys,
+      },
+    ],
   });
 
   const res = await fetch(url, {
