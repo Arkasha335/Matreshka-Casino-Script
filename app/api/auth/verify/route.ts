@@ -21,11 +21,22 @@ export async function POST(req: NextRequest) {
     const inputHash = hashKey(key);
 
     const data = await get('keys');
+    console.log('Edge Config keys type:', typeof data, 'isArray:', Array.isArray(data));
+
     const keys: LicenseEntry[] = Array.isArray(data) ? (data as unknown as LicenseEntry[]) : [];
+
+    if (keys.length === 0) {
+      console.warn('No keys found in Edge Config');
+      return NextResponse.json({ valid: false, error: 'Система не настроена' }, { status: 401 });
+    }
+
+    console.log('Total keys in config:', keys.length);
 
     const license = keys.find((l) => l.hash === inputHash && l.active === true);
 
     if (!license) {
+      console.warn('License not found. Input hash:', inputHash.substring(0, 10));
+      console.log('Stored hashes:', keys.map(k => k.hash.substring(0, 10)));
       return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
     }
 
@@ -35,8 +46,8 @@ export async function POST(req: NextRequest) {
       .sign(new TextEncoder().encode(SECRET));
 
     return NextResponse.json({ valid: true, token, label: license.label });
-  } catch (error) {
-    console.error('Auth Error:', error);
+  } catch (error: any) {
+    console.error('Auth Error:', error.message);
     return NextResponse.json({ valid: false, error: 'Server error' }, { status: 500 });
   }
 }
