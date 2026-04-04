@@ -1,19 +1,3 @@
-Отлично, логи подтверждают: fs не работает на Vercel. Переходим на Edge Config.
-
-Для записи в Edge Config нужен Vercel API Token (чтение работает через EDGE_CONFIG, а запись — через API).
-
-Шаг 1: Создай Vercel API Token
-Зайди на vercel.com/account/tokens
-Нажми Create
-Name: matreshka-admin, Scope: All Projects, Expiration: Never
-Скопируй токен (он покажется один раз!)
-В Settings → Environment Variables проекта добавь:
-VERCEL_API_TOKEN: вставь токен
-VERCEL_TEAM_ID: твой Team ID (найдёшь в Settings → General, называется Team Id, начинается с team_...)
-Шаг 2: Обнови код API
-Замени содержимое файлов:
-
-app/api/auth/verify/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { hashKey } from '@/lib/license-gen';
 import { get } from '@vercel/edge-config';
