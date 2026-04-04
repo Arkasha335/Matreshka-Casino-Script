@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { jwtVerify } from 'jose';
+import { get } from '@vercel/edge-config';
 
 const SECRET = process.env.JWT_SECRET || 'matreshka-quantum-secret-2026';
 
 export async function middleware(req: NextRequest) {
   const token = req.cookies.get('mq_token')?.value;
   const pathname = req.nextUrl.pathname;
+
+  // /welcome — возвращает приветствие из Edge Config
+  if (pathname === '/welcome') {
+    const greeting = await get('greeting');
+    return NextResponse.json(greeting);
+  }
 
   // /login — всегда доступен
   if (pathname === '/login') {
