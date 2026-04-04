@@ -1,9 +1,65 @@
+Отлично, логи подтверждают: fs не работает на Vercel. Переходим на Edge Config.
+
+Для записи в Edge Config нужен Vercel API Token (чтение работает через EDGE_CONFIG, а запись — через API).
+
+Шаг 1: Создай Vercel API Token
+Зайди на vercel.com/account/tokens
+Нажми Create
+Name: matreshka-admin, Scope: All Projects, Expiration: Never
+Скопируй токен (он покажется один раз!)
+В Settings → Environment Variables проекта добавь:
+VERCEL_API_TOKEN: вставь токен
+VERCEL_TEAM_ID: твой Team ID (найдёшь в Settings → General, называется Team Id, начинается с team_...)
+Шаг 2: Обнови код API
+Замени содержимое файлов:
+
+app/api/auth/verify/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { hashKey } from '@/lib/license-gen';
+import { get } from '@vercel/edge-config';
+import { SignJWT } from 'jose';
+
+const SECRET = process.env.JWT_SECRET || 'matreshka-quantum-secret-2026';
+
+export async function POST(req: NextRequest) {
+  try {
+    const { key } = await req.json();
+    const inputHash = hashKey(key);
+
+    // Читаем из Edge Config
+    const data = await get('keys');
+    const keys = Array.isArray(data) ? data : [];
+
+    const license = keys.find((l: any) => l.hash === inputHash && l.active === true);
+
+    if (!license) {
+      return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
+    }
+
+    // Обновляем lastUsed (запись через API, здесь только чтение для верификации)
+    // Для простоты не обновляем lastUsed при каждом входе, чтобы не нагружать API
+    // Или можно добавить асинхронное обновление в фоне
+
+    const token = await new SignJWT({ key: inputHash, label: license.label })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('24h')
+      .sign(new TextEncoder().encode(SECRET));
+
+    return NextResponse.json({ valid: true, token, label: license.label });
+  } catch (error) {
+    console.error('Auth Error:', error);
+    return NextResponse.json({ valid: false, error: 'Server error' }, { status: 500 });
+  }
+}
+app/api/license/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { generateLicenseKey, hashKey } from '@/lib/license-gen';
-import * as fs from 'fs';
-import * as path from 'path';
+import { get } from '@vercel/edge-config';
 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin-default-change-me';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin-default';
+const API_TOKEN = process.env.VERCEL_API_TOKEN;
+const TEAM_ID = process.env.VERCEL_TEAM_ID;
+const EDGE_CONFIG_ID = 'ecfg_1ueolsdjxfebxapzihx0yhsq84ug';
 
 function verifyAdmin(req: NextRequest): boolean {
   const auth = req.headers.get('authorization');
@@ -11,67 +67,71 @@ function verifyAdmin(req: NextRequest): boolean {
   return auth.slice(7) === ADMIN_SECRET;
 }
 
-// GET — список всех лицензий
+async function edgeConfigWrite(items: any) {
+  const url = `https://api.vercel.com/v1/edge-config/${EDGE_CONFIG_ID}/items?teamId=${TEAM_ID}`;
+  const res = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ items }),
+  });
+  if (!res.ok) throw new Error(`Edge Config write failed: ${res.status}`);
+}
+
 export async function GET(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-
-  const licensesPath = path.join(process.cwd(), 'lib', 'licenses.json');
-  const data = JSON.parse(fs.readFileSync(licensesPath, 'utf-8'));
-  return NextResponse.json(data);
+  try {
+    const keys = await get('keys');
+    return NextResponse.json({ keys: keys || [] });
+  } catch (e) {
+    return NextResponse.json({ error: 'Read failed' }, { status: 500 });
+  }
 }
 
-// POST — создать новую лицензию
 export async function POST(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-
-  const { label } = await req.json();
-  const key = generateLicenseKey();
-  const hash = hashKey(key);
-
-  const licensesPath = path.join(process.cwd(), 'lib', 'licenses.json');
-  const data = JSON.parse(fs.readFileSync(licensesPath, 'utf-8'));
-
-  data.keys.push({
-    key,
-    hash,
-    label: label || 'Unnamed',
-    createdAt: Date.now(),
-    active: true,
-    lastUsed: null,
-    sessionsCount: 0,
-  });
-
-  fs.writeFileSync(licensesPath, JSON.stringify(data, null, 2));
-  return NextResponse.json({ key, label });
+  try {
+    const { label } = await req.json();
+    const key = generateLicenseKey();
+    const hash = hashKey(key);
+    
+    const existing = (await get('keys')) || [];
+    const newEntry = {
+      key, hash, label: label || 'Unnamed',
+      createdAt: Date.now(), active: true, lastUsed: null, sessionsCount: 0
+    };
+    
+    await edgeConfigWrite({ keys: [...existing, newEntry] });
+    return NextResponse.json({ key, label });
+  } catch (e) {
+    return NextResponse.json({ error: 'Write failed' }, { status: 500 });
+  }
 }
 
-// PATCH — отозвать/активировать лицензию
 export async function PATCH(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-
-  const { hash: targetHash, active } = await req.json();
-
-  const licensesPath = path.join(process.cwd(), 'lib', 'licenses.json');
-  const data = JSON.parse(fs.readFileSync(licensesPath, 'utf-8'));
-
-  const license = data.keys.find((l: any) => l.hash === targetHash);
-  if (!license) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
-  license.active = active;
-  fs.writeFileSync(licensesPath, JSON.stringify(data, null, 2));
-  return NextResponse.json({ success: true });
+  try {
+    const { hash: targetHash, active } = await req.json();
+    const existing = (await get('keys')) || [];
+    const updated = existing.map((l: any) => l.hash === targetHash ? { ...l, active } : l);
+    await edgeConfigWrite({ keys: updated });
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: 'Update failed' }, { status: 500 });
+  }
 }
 
-// DELETE — удалить лицензию
 export async function DELETE(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-
-  const { hash: targetHash } = await req.json();
-
-  const licensesPath = path.join(process.cwd(), 'lib', 'licenses.json');
-  const data = JSON.parse(fs.readFileSync(licensesPath, 'utf-8'));
-
-  data.keys = data.keys.filter((l: any) => l.hash !== targetHash);
-  fs.writeFileSync(licensesPath, JSON.stringify(data, null, 2));
-  return NextResponse.json({ success: true });
+  try {
+    const { hash: targetHash } = await req.json();
+    const existing = (await get('keys')) || [];
+    const updated = existing.filter((l: any) => l.hash !== targetHash);
+    await edgeConfigWrite({ keys: updated });
+    return NextResponse.json({ success: true });
+  } catch (e) {
+    return NextResponse.json({ error: 'Delete failed' }, { status: 500 });
+  }
 }

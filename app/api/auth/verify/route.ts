@@ -1,36 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hashKey } from '@/lib/license-gen';
-import * as fs from 'fs';
-import * as path from 'path';
+import { get } from '@vercel/edge-config';
 import { SignJWT } from 'jose';
 
 const SECRET = process.env.JWT_SECRET || 'matreshka-quantum-secret-2026';
 
 export async function POST(req: NextRequest) {
-  const { key } = await req.json();
-  const inputHash = hashKey(key);
+  try {
+    const { key } = await req.json();
+    const inputHash = hashKey(key);
 
-  const licensesPath = path.join(process.cwd(), 'lib', 'licenses.json');
-  const data = JSON.parse(fs.readFileSync(licensesPath, 'utf-8'));
+    // Читаем из Edge Config
+    const data = await get('keys');
+    const keys = Array.isArray(data) ? data : [];
 
-  const license = data.keys.find(
-    (l: any) => l.hash === inputHash && l.active === true
-  );
+    const license = keys.find((l: any) => l.hash === inputHash && l.active === true);
 
-  if (!license) {
-    return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
+    if (!license) {
+      return NextResponse.json({ valid: false, error: 'Недействительный ключ' }, { status: 401 });
+    }
+
+    // Обновляем lastUsed (запись через API, здесь только чтение для верификации)
+    // Для простоты не обновляем lastUsed при каждом входе, чтобы не нагружать API
+    // Или можно добавить асинхронное обновление в фоне
+
+    const token = await new SignJWT({ key: inputHash, label: license.label })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('24h')
+      .sign(new TextEncoder().encode(SECRET));
+
+    return NextResponse.json({ valid: true, token, label: license.label });
+  } catch (error) {
+    console.error('Auth Error:', error);
+    return NextResponse.json({ valid: false, error: 'Server error' }, { status: 500 });
   }
-
-  // Обновить lastUsed
-  license.lastUsed = Date.now();
-  license.sessionsCount++;
-  fs.writeFileSync(licensesPath, JSON.stringify(data, null, 2));
-
-  // Создать JWT
-  const token = await new SignJWT({ key: inputHash, label: license.label })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setExpirationTime('24h')
-    .sign(new TextEncoder().encode(SECRET));
-
-  return NextResponse.json({ valid: true, token, label: license.label });
 }
