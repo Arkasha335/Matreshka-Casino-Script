@@ -40,7 +40,7 @@ export async function GET(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
   try {
     const data = await get('keys');
-    const keys: LicenseEntry[] = Array.isArray(data) ? (data as LicenseEntry[]) : [];
+    const keys: LicenseEntry[] = Array.isArray(data) ? (data as unknown as LicenseEntry[]) : [];
     return NextResponse.json({ keys });
   } catch {
     return NextResponse.json({ error: 'Read failed' }, { status: 500 });
@@ -53,7 +53,7 @@ export async function POST(req: NextRequest) {
     const { label } = await req.json();
     const key = generateLicenseKey();
     const hash = hashKey(key);
-    const existing: LicenseEntry[] = await get('keys') || [];
+    const existing: LicenseEntry[] = (await get('keys') as unknown as LicenseEntry[]) || [];
     const newEntry: LicenseEntry = {
       key, hash, label: label || 'Unnamed',
       createdAt: Date.now(), active: true, lastUsed: null, sessionsCount: 0
@@ -69,7 +69,7 @@ export async function PATCH(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
   try {
     const { hash: targetHash, active } = await req.json();
-    const existing: LicenseEntry[] = await get('keys') || [];
+    const existing: LicenseEntry[] = (await get('keys') as unknown as LicenseEntry[]) || [];
     const updated = existing.map((l) => l.hash === targetHash ? { ...l, active } : l);
     await edgeConfigWrite({ keys: updated });
     return NextResponse.json({ success: true });
@@ -82,7 +82,7 @@ export async function DELETE(req: NextRequest) {
   if (!verifyAdmin(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
   try {
     const { hash: targetHash } = await req.json();
-    const existing: LicenseEntry[] = await get('keys') || [];
+    const existing: LicenseEntry[] = (await get('keys') as unknown as LicenseEntry[]) || [];
     const updated = existing.filter((l) => l.hash !== targetHash);
     await edgeConfigWrite({ keys: updated });
     return NextResponse.json({ success: true });

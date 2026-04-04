@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     const inputHash = hashKey(key);
 
     const data = await get('keys');
-    const keys: LicenseEntry[] = Array.isArray(data) ? (data as LicenseEntry[]) : [];
+    const keys: LicenseEntry[] = Array.isArray(data) ? (data as unknown as LicenseEntry[]) : [];
 
     const license = keys.find((l) => l.hash === inputHash && l.active === true);
 
