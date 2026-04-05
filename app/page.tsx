@@ -54,7 +54,307 @@ interface SessionLogEntry {
   current_balance: number;
   server_state_detected: string;
   time_since_last_spin: number;
+  recovery_mode?: string;
+  dynamic_cap?: number;
 }
+
+function calculateMinimumBankroll(): { minimum: number; recommended: number; explanation: string } {
+  const typicalStep4 = 15000;
+  const practicalMinimum = typicalStep4 * 20; // 300,000 ₽
+  const practicalRecommended = typicalStep4 * 40; // 600,000 ₽
+
+  return {
+    minimum: practicalMinimum,
+    recommended: practicalRecommended,
+    explanation: `Минимальный баланс: ${practicalMinimum.toLocaleString('ru-RU')} ₽ (выдержать 20 шагов). Рекомендуемый: ${practicalRecommended.toLocaleString('ru-RU')} ₽ для комфортной игры.`
+  };
+}
+
+function calculateDynamicCap(bankroll: number, serverState: string, winrate30: number): number {
+  let capPercent: number;
+
+  if (winrate30 >= 0.55) {
+    capPercent = 0.20;
+  } else if (winrate30 >= 0.45) {
+    capPercent = 0.10;
+  } else {
+    capPercent = 0.03;
+  }
+
+  if (serverState === 'СЛИВ') {
+    capPercent = 0.05;
+  }
+
+  const cap = Math.round(bankroll * capPercent);
+  const absoluteMax = Math.round(bankroll * 0.50);
+
+  return Math.min(cap, absoluteMax, 1000000);
+}
+
+// --- CIE MODULES ---
+
+// Module G: Hysteresis
+const CDT_ENTER_RECOVERY = 500;
+const CDT_EXIT_RECOVERY = 200;
+const MIN_RECOVERY_SPINS = 3;
+const MIN_BASE_SPINS = 2;
+
+function calculateRecoveryModeFromWinrate(winrate30: number): string {
+  if (winrate30 >= 0.52) return 'RECOVERY-FAST';
+  if (winrate30 >= 0.48) return 'RECOVERY-MODERATE';
+  if (winrate30 >= 0.44) return 'RECOVERY-SLOW';
+  return 'RECOVERY-FROZEN';
+}
+
+function determineRecoveryMode(
+  cdt: number,
+  currentRecoveryMode: string,
+  spinsInCurrentMode: number,
+  winrate30: number
+): string {
+  const inRecovery = currentRecoveryMode !== 'BASE';
+
+  if (!inRecovery && cdt > CDT_ENTER_RECOVERY) {
+    if (spinsInCurrentMode >= MIN_BASE_SPINS) {
+      return calculateRecoveryModeFromWinrate(winrate30);
+    }
+    return 'BASE';
+  }
+
+  if (inRecovery && cdt < CDT_EXIT_RECOVERY) {
+    if (spinsInCurrentMode >= MIN_RECOVERY_SPINS) {
+      return 'BASE';
+    }
+    return currentRecoveryMode;
+  }
+
+  if (inRecovery) {
+      return calculateRecoveryModeFromWinrate(winrate30);
+  }
+
+  return currentRecoveryMode;
+}
+
+// Module F: Smart Phantom 2.0
+interface PhantomConfig {
+  mode: 'OFFENSIVE' | 'DEFENSIVE' | 'SNIPER';
+  betMultiplier: number;
+  exitCondition: '2_WINS' | 'CDT_THRESHOLD' | 'STREAK_BREAK';
+}
+
+function calculatePhantomBet(
+  cdt: number,
+  bankroll: number,
+  dynamicCap: number,
+  currentLossStreak: number,
+  winrate30: number
+): { bet: number; config: PhantomConfig } {
+  const baseBet = 1000;
+
+  if (currentLossStreak >= 8) {
+    return {
+      bet: Math.min(baseBet, Math.round(bankroll * 0.001)),
+      config: {
+        mode: 'DEFENSIVE',
+        betMultiplier: 0.001,
+        exitCondition: 'STREAK_BREAK'
+      }
+    };
+  }
+
+  if (currentLossStreak >= 6 && winrate30 < 0.45) {
+    const sniperBet = Math.round(dynamicCap * 0.30);
+    return {
+      bet: Math.min(sniperBet, Math.round(bankroll * 0.10)),
+      config: {
+        mode: 'SNIPER',
+        betMultiplier: 0.30,
+        exitCondition: 'CDT_THRESHOLD'
+      }
+    };
+  }
+
+  const aggressiveBet = Math.round(cdt * 0.08);
+  return {
+    bet: Math.max(baseBet, Math.min(aggressiveBet, dynamicCap, Math.round(bankroll * 0.03))),
+    config: {
+      mode: 'OFFENSIVE',
+      betMultiplier: 0.08,
+      exitCondition: '2_WINS'
+    }
+  };
+}
+
+// Module H: Cycle Integrity
+const MAX_CYCLE_LOSS_PERCENT = 0.03;
+const MAX_CYCLE_SPINS = 25;
+
+function checkCycleIntegrity(
+  currentBalance: number,
+  cycleStartBalance: number,
+  cycleSpinCount: number,
+  bankroll: number
+): { forceReset: boolean; reason: string } {
+  const cyclePnL = currentBalance - cycleStartBalance;
+  const maxAllowedLoss = bankroll * MAX_CYCLE_LOSS_PERCENT;
+
+  if (cyclePnL < -maxAllowedLoss) {
+    return {
+      forceReset: true,
+      reason: `CYCLE LOSS LIMIT: -${Math.round(Math.abs(cyclePnL)).toLocaleString()} ₽ exceeds ${MAX_CYCLE_LOSS_PERCENT * 100}% threshold`
+    };
+  }
+
+  if (cycleSpinCount >= MAX_CYCLE_SPINS) {
+    return {
+      forceReset: true,
+      reason: `CYCLE TIMEOUT: ${cycleSpinCount} spins exceeds ${MAX_CYCLE_SPINS} limit`
+    };
+  }
+
+  return { forceReset: false, reason: '' };
+}
+
+// Module J: Exit Gate
+const COOLDOWN_MAX_SPINS = 8;
+const POST_COOLDOWN_BASE_SPINS = 5;
+
+function processExitGate(
+  forceReset: boolean,
+  currentCdt: number,
+  isCooldown: boolean,
+  cooldownSpins: number,
+  bankroll: number,
+  residualCdt: number
+): { newCdt: number; isCooldown: boolean; newCooldownSpins: number; bet: number; isPostCooldown: boolean; postCooldownSpins: number } {
+  if (forceReset) {
+    return {
+      newCdt: 0,
+      isCooldown: true,
+      newCooldownSpins: 0,
+      bet: 1000,
+      isPostCooldown: false,
+      postCooldownSpins: 0
+    };
+  }
+
+  if (isCooldown) {
+    const nextCooldownSpins = cooldownSpins + 1;
+
+    if (nextCooldownSpins >= COOLDOWN_MAX_SPINS) {
+      // Enter BASE lock
+      return {
+        newCdt: residualCdt,
+        isCooldown: false,
+        newCooldownSpins: 0,
+        bet: 1000,
+        isPostCooldown: true,
+        postCooldownSpins: 0
+      };
+    }
+
+    return {
+      newCdt: 0,
+      isCooldown: true,
+      newCooldownSpins: nextCooldownSpins,
+      bet: 1000,
+      isPostCooldown: false,
+      postCooldownSpins: 0
+    };
+  }
+
+  return {
+    newCdt: currentCdt,
+    isCooldown: false,
+    newCooldownSpins: 0,
+    bet: 0,
+    isPostCooldown: false,
+    postCooldownSpins: 0
+  };
+}
+
+// Velocity Limiter
+const MAX_BET_GROWTH_FACTOR = 2.5;
+
+function applyBetVelocityLimit(
+  rawBet: number,
+  previousBet: number
+): number {
+  const maxAllowed = Math.round(previousBet * MAX_BET_GROWTH_FACTOR);
+  return Math.min(rawBet, maxAllowed);
+}
+
+// --- END CIE MODULES ---
+
+function getZeroClusterDivisorBonus(history: HistoryEntry[], window: number = 10): number {
+  const recent = history.slice(-window);
+  const zeroCount = recent.filter(h => h.outcome === 'ZERO').length;
+  if (zeroCount >= 2) {
+    return 0.10;
+  }
+  return 0;
+}
+
+function calculateNextBet(
+  cdt: number,
+  currentStep: number,
+  winrate30: number,
+  dynamicCap: number,
+  currentBankroll: number,
+  isShadowMode: boolean,
+  history: HistoryEntry[]
+): { bet: number; mode: string } {
+  const TARGET = 1000;
+
+  if (isShadowMode) {
+    return { bet: 1000, mode: 'PHANTOM' };
+  }
+
+  if (cdt <= 0) {
+    return { bet: 1000, mode: 'BASE' };
+  }
+
+  let divisor: number;
+  let mode: string;
+  
+  if (winrate30 >= 0.52) {
+    divisor = 0.82;
+    mode = 'RECOVERY-FAST';
+  } else if (winrate30 >= 0.48) {
+    divisor = 0.90;
+    mode = 'RECOVERY-MODERATE';
+  } else if (winrate30 >= 0.44) {
+    divisor = 0.95;
+    mode = 'RECOVERY-SLOW';
+  } else {
+    return { bet: 1000, mode: 'RECOVERY-FROZEN' };
+  }
+
+  const zeroBonus = getZeroClusterDivisorBonus(history);
+  divisor += zeroBonus;
+
+  const rawTbb = Math.round((cdt + TARGET) / divisor);
+  const stepMultiplier = (mode === 'RECOVERY-SHADOW' || mode === 'RECOVERY-FROZEN') ? 1.0 : (currentStep >= 4 ? 1.3 : currentStep === 3 ? 1.15 : 1.0);
+  let targetBet = Math.round(rawTbb * stepMultiplier);
+  
+  if (mode === 'RECOVERY-SHADOW') {
+    const shadowCap = Math.round(currentBankroll * 0.03);
+    targetBet = Math.min(targetBet, shadowCap);
+  } else {
+    if (targetBet >= dynamicCap) {
+      targetBet = dynamicCap;
+    }
+  }
+  
+  return { bet: Math.max(1000, targetBet), mode };
+}
+
+const computeWinrate30 = (hist: HistoryEntry[]): number => {
+  const recent = hist.filter(h => h.outcome !== 'ZERO').slice(-30);
+  if (recent.length === 0) return 0.5;
+  const wins = recent.filter(h => h.isWin).length;
+  return wins / recent.length;
+};
 
 // Audio Engine
 let audioCtx: AudioContext | null = null;
@@ -170,6 +470,7 @@ const getLocalSkew = (history: HistoryEntry[], window = 15) => {
 
 const getApexMatrix = (history: HistoryEntry[], window = 20) => {
   const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
+  const recent15 = history.filter(h => h.outcome !== 'ZERO').slice(-15);
   
   let redCount = 0;
   let blackCount = 0;
@@ -196,14 +497,30 @@ const getApexMatrix = (history: HistoryEntry[], window = 20) => {
   
   let alpha: Outcome | 'NEUTRAL' = 'NEUTRAL';
   let omega: Outcome | 'NEUTRAL' = 'NEUTRAL';
+  let alphaConfidence = 0;
   
-  if (nonZero.length > 0) {
-    if (redCount / nonZero.length > 0.6) {
+  if (nonZero.length >= 8) {
+    const redPct = redCount / nonZero.length;
+    const blackPct = blackCount / nonZero.length;
+
+    if (redPct > 0.55) {
       alpha = 'RED';
       omega = 'BLACK';
-    } else if (blackCount / nonZero.length > 0.6) {
+      alphaConfidence = Math.round((redPct - 0.50) * 200);
+    } else if (blackPct > 0.55) {
       alpha = 'BLACK';
       omega = 'RED';
+      alphaConfidence = Math.round((blackPct - 0.50) * 200);
+    }
+  }
+
+  if (alpha !== 'NEUTRAL' && recent15.length >= 5) {
+    const recent15Red = recent15.filter(h => h.outcome === 'RED').length;
+    const recent15Pct = recent15Red / recent15.length;
+
+    if ((alpha === 'RED' && recent15Pct >= 0.65) ||
+        (alpha === 'BLACK' && recent15Pct <= 0.35)) {
+      alphaConfidence += 15;
     }
   }
   
@@ -226,7 +543,8 @@ const getApexMatrix = (history: HistoryEntry[], window = 20) => {
     maxStreakRed,
     maxStreakBlack,
     currentActiveColor,
-    currentActiveStreak
+    currentActiveStreak,
+    alphaConfidence
   };
 };
 
@@ -282,7 +600,8 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
   } else if (L1 === L2) {
     if (L1 === matrix.alpha && currentMaxStreak > 2) {
       recommendation = L1;
-      confidence = 75;
+      const alphaBonus = Math.min(15, matrix.alphaConfidence || 0);
+      confidence = 75 + alphaBonus;
       state = 'АЛЬФА-ТРЕНД';
     } else if (L1 === matrix.omega) {
       recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
@@ -298,6 +617,13 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
     recommendation = L1;
     confidence = 55;
     state = 'ЧЕРЕДОВАНИЕ';
+  }
+  
+  if (matrix.alpha !== 'NEUTRAL' && matrix.alphaConfidence >= 20) {
+    recommendation = matrix.alpha;
+    confidence = Math.max(confidence, 80);
+    state = 'АЛЬФА-ИМПУЛЬС';
+    triggerStrike = true;
   }
   
   if (L1 === matrix.alpha && L2 === matrix.omega) {
@@ -352,6 +678,27 @@ export default function MatreshkaQuantum() {
   const [cdt, setCdt] = useState<number>(0);
   const [phantomWins, setPhantomWins] = useState<number>(0);
 
+  // Module G: Hysteresis
+  const [spinsInCurrentMode, setSpinsInCurrentMode] = useState<number>(0);
+
+  // Module H: Cycle Integrity
+  const [cycleStartBalance, setCycleStartBalance] = useState<number>(0);
+  const [cycleSpinCount, setCycleSpinCount] = useState<number>(0);
+  const [cycleNumber, setCycleNumber] = useState<number>(1);
+  const [cycleHistory, setCycleHistory] = useState<Array<{
+    id: number; spins: number; pnl: number; maxCdt: number; ended: string
+  }>>([]);
+
+  // Module J: Exit Gate
+  const [isCooldown, setIsCooldown] = useState<boolean>(false);
+  const [cooldownSpins, setCooldownSpins] = useState<number>(0);
+  const [residualCdt, setResidualCdt] = useState<number>(0);
+  const [isPostCooldown, setIsPostCooldown] = useState<boolean>(false);
+  const [postCooldownSpins, setPostCooldownSpins] = useState<number>(0);
+
+  // Velocity Limiter
+  const [previousBet, setPreviousBet] = useState<number>(1000);
+
   useEffect(() => {
     let interval: NodeJS.Timeout;
     if (isShadowMode) {
@@ -382,6 +729,17 @@ export default function MatreshkaQuantum() {
         setFrozenStep(parsed.frozenStep || 0);
         setCdt(parsed.cdt || 0);
         setPhantomWins(parsed.phantomWins || 0);
+        setSpinsInCurrentMode(parsed.spinsInCurrentMode || 0);
+        setCycleStartBalance(parsed.cycleStartBalance || parsed.initialBankroll || 0);
+        setCycleSpinCount(parsed.cycleSpinCount || 0);
+        setCycleNumber(parsed.cycleNumber || 1);
+        setCycleHistory(parsed.cycleHistory || []);
+        setIsCooldown(parsed.isCooldown || false);
+        setCooldownSpins(parsed.cooldownSpins || 0);
+        setResidualCdt(parsed.residualCdt || 0);
+        setIsPostCooldown(parsed.isPostCooldown || false);
+        setPostCooldownSpins(parsed.postCooldownSpins || 0);
+        setPreviousBet(parsed.previousBet || 1000);
         if (parsed.sessionStartTime) setSessionStartTime(parsed.sessionStartTime);
       } catch (e) {
         console.error("Failed to parse saved state", e);
@@ -398,10 +756,12 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_state', JSON.stringify({
-        initialBankroll, history, currentStep, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt, phantomWins
+        initialBankroll, history, currentStep, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt, phantomWins,
+        spinsInCurrentMode, cycleStartBalance, cycleSpinCount, cycleNumber, cycleHistory, isCooldown, cooldownSpins, residualCdt,
+        isPostCooldown, postCooldownSpins, previousBet
       }));
     }
-  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt, phantomWins]);
+  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt, phantomWins, spinsInCurrentMode, cycleStartBalance, cycleSpinCount, cycleNumber, cycleHistory, isCooldown, cooldownSpins, residualCdt, isPostCooldown, postCooldownSpins, previousBet]);
 
   const saveCurrentSession = () => {
     if (history.length === 0) return;
@@ -431,9 +791,8 @@ export default function MatreshkaQuantum() {
 
   if (initialBankroll === 0) {
     const parsedBankroll = Number(setupVal) || 0;
-    const { SafeUnit, AggressiveUnit } = calculateBaseUnit(parsedBankroll);
-    
-    const maxSteps = SafeUnit > 0 ? Math.floor(Math.log(parsedBankroll / SafeUnit) / Math.log(2.2)) : 0;
+    const { minimum, recommended, explanation } = calculateMinimumBankroll();
+    const maxSteps = parsedBankroll > 0 ? Math.floor(Math.log(parsedBankroll / 1000) / Math.log(2.2)) : 0;
 
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 font-sans text-white">
@@ -443,8 +802,19 @@ export default function MatreshkaQuantum() {
           className="max-w-md w-full bg-gray-900 p-8 rounded-2xl border border-gray-800 shadow-2xl"
         >
           <h1 className="text-2xl font-black text-white mb-2 text-center tracking-widest uppercase">Matreshka Quantum</h1>
-          <p className="text-gray-500 text-center text-sm mb-8">Quantum Strike Engine v10.0</p>
+          <p className="text-gray-500 text-center text-sm mb-8">Adaptive Dynamic Recovery Engine v11.0</p>
           <div className="space-y-6">
+            <div className="bg-black/50 p-4 rounded-xl border border-gray-800 text-xs text-gray-400 space-y-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={14} className="text-yellow-500" />
+                <span>Минимальный баланс: <strong className="text-yellow-500">{minimum.toLocaleString('ru-RU')} ₽</strong></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <CheckCircle2 size={14} className="text-emerald-500" />
+                <span>Рекомендуемый баланс: <strong className="text-emerald-500">{recommended.toLocaleString('ru-RU')} ₽</strong></span>
+              </div>
+            </div>
+
             <div>
               <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Ваш Баланс (₽)</label>
               <input
@@ -465,11 +835,20 @@ export default function MatreshkaQuantum() {
                       Базовая ставка: <span className="font-bold text-white">1,000 ₽</span>
                     </p>
                     <p className="text-sm text-gray-300 mb-1">
-                      SNIPER: <span className="font-bold text-yellow-500">TBB × 1.3 (шаг ≥ 2)</span>
+                      ADRE: <span className="font-bold text-yellow-500">Динамический TBB с учетом Winrate</span>
                     </p>
                     <p className="text-xs text-gray-400 mt-2">
-                      Ваш баланс выдержит <span className="font-bold text-emerald-400">{maxSteps}</span> шагов прогрессии.
+                      Выживаемость: <span className="font-bold text-emerald-400">~{maxSteps}</span> шагов прогрессии.
                     </p>
+                    <div className="mt-3 text-xs font-bold">
+                      {parsedBankroll < minimum ? (
+                        <span className="text-red-500">⛔ Баланс ниже минимума — высокий риск ликвидации</span>
+                      ) : parsedBankroll < recommended ? (
+                        <span className="text-yellow-500">⚠ Баланс достаточен, но рекомендуется пополнение</span>
+                      ) : (
+                        <span className="text-emerald-500">✓ Оптимальный баланс для стабильной игры</span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -485,6 +864,17 @@ export default function MatreshkaQuantum() {
                   setAttackStep(0);
                   setZeroMessage(false);
                   setSessionStartTime(Date.now());
+                  setSpinsInCurrentMode(0);
+                  setCycleStartBalance(val);
+                  setCycleSpinCount(0);
+                  setCycleNumber(1);
+                  setCycleHistory([]);
+                  setIsCooldown(false);
+                  setCooldownSpins(0);
+                  setResidualCdt(0);
+                  setIsPostCooldown(false);
+                  setPostCooldownSpins(0);
+                  setPreviousBet(1000);
                 }
               }}
               disabled={!setupVal || Number(setupVal) <= 0}
@@ -546,24 +936,62 @@ export default function MatreshkaQuantum() {
     serverState = 'СЛИВ';
   }
 
-  let rawTbb = Math.round((cdt + 1000) / 0.98);
-  let maxStrikeBet = initialBankroll * 0.05;
-  let isSniperRecovery = rawTbb > maxStrikeBet;
+  const winrate30 = computeWinrate30(history);
+  const dynamicCap = calculateDynamicCap(currentBankroll, serverPhase, winrate30);
+  
+  // 3. Compute currentLossStreak
+  let currentLossStreak = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (!history[i].isWin && history[i].outcome !== 'ZERO') {
+      currentLossStreak++;
+    } else if (history[i].isWin) {
+      break;
+    }
+  }
+
   let nextBet = 1000;
   let isPhantomBet = false;
+  let recoveryMode = 'BASE';
+  let phantomConfig: PhantomConfig | null = null;
 
-  if (isShadowMode) {
-      nextBet = 1000;
-      isPhantomBet = true;
-  } else if (manualBet !== null) {
+  if (manualBet !== null) {
       nextBet = manualBet;
-  } else if (cdt > 0) {
-      // SNIPER: при шаге >= 2 увеличиваем ставку на 30%
-      let sniperMultiplier = currentStep >= 2 ? 1.3 : 1.0;
-      let sniperBet = Math.round(rawTbb * sniperMultiplier);
-      nextBet = Math.max(1000, Math.min(sniperBet, maxStrikeBet, 1000000));
+      recoveryMode = 'MANUAL';
   } else {
-      nextBet = 1000;
+      // 6. Determine base recovery mode -> apply HYSTERESIS
+      const baseBetResult = calculateNextBet(cdt, currentStep, winrate30, dynamicCap, currentBankroll, false, history);
+      recoveryMode = determineRecoveryMode(cdt, baseBetResult.mode, spinsInCurrentMode, winrate30);
+      let baseBet = baseBetResult.bet;
+      if (recoveryMode === 'BASE') {
+          baseBet = 1000;
+      }
+
+      // 8. If in PHANTOM -> apply PHANTOM 2.0 logic
+      if (isShadowMode) {
+          isPhantomBet = true;
+          const phantomResult = calculatePhantomBet(cdt, currentBankroll, dynamicCap, currentLossStreak, winrate30);
+          nextBet = phantomResult.bet;
+          phantomConfig = phantomResult.config;
+          recoveryMode = `PHANTOM-${phantomConfig.mode}`;
+      } else {
+          nextBet = baseBet;
+      }
+
+      // 9. If in COOLDOWN -> apply EXIT GATE logic
+      if (isCooldown) {
+          nextBet = 1000;
+          recoveryMode = 'COOLDOWN';
+      } else if (isPostCooldown) {
+          nextBet = 1000;
+          recoveryMode = 'POST-COOLDOWN';
+      }
+
+      // 10. Apply Velocity Limiter and Absolute Cap
+      if (recoveryMode !== 'MANUAL') {
+          nextBet = applyBetVelocityLimit(nextBet, previousBet);
+          const absoluteMax = Math.round(currentBankroll * 0.05);
+          nextBet = Math.min(nextBet, absoluteMax, 1000000);
+      }
   }
 
   if (nextBet > currentBankroll && currentBankroll > 0 && !isPhantomBet) {
@@ -597,6 +1025,10 @@ export default function MatreshkaQuantum() {
       maxDrawdown = drawdown;
     }
   }
+
+  const sessionStopLossPercent = Math.min(100, Math.max(0,
+    (Math.abs(Math.min(0, profit)) / (initialBankroll * 0.07)) * 100
+  ));
 
   const redCount = history.filter(h => h.outcome === 'RED').length;
   const blackCount = history.filter(h => h.outcome === 'BLACK').length;
@@ -710,23 +1142,29 @@ export default function MatreshkaQuantum() {
     let justExitedShadow = false;
     let nextPhantomWins = phantomWins;
 
+    let nextSpinsInCurrentMode = spinsInCurrentMode + 1;
+    let nextCycleSpinCount = cycleSpinCount + 1;
+    let nextIsCooldown = isCooldown;
+    let nextCooldownSpins = cooldownSpins;
+    let nextResidualCdt = residualCdt;
+    let nextIsPostCooldown = isPostCooldown;
+    let nextPostCooldownSpins = postCooldownSpins;
+    let nextCycleStartBalance = cycleStartBalance;
+    let nextCycleNumber = cycleNumber;
+    let nextCycleHistory = [...cycleHistory];
+
     if (outcome === 'ZERO') {
       isWin = false;
       netProfit = -nextBet;
-      nextCdt += nextBet;
+      nextCdt += Math.round(nextBet * 0.5);
       setZeroMessage(true);
       setTimeout(() => setZeroMessage(false), 4000);
-      if (isShadowMode) {
+      
+      const recentZeros = history.slice(-9).filter(h => h.outcome === 'ZERO').length;
+      if (recentZeros >= 1) {
+        nextShadowMode = true;
+        nextFrozenStep = currentStep;
         nextPhantomWins = 0;
-      } else {
-        if (currentStep < 4) {
-          nextStep = currentStep + 1;
-        } else {
-          nextShadowMode = true;
-          nextFrozenStep = 4;
-          nextStep = 4;
-          nextPhantomWins = 0;
-        }
       }
     } else if (recommendation === outcome) {
       isWin = true;
@@ -736,16 +1174,6 @@ export default function MatreshkaQuantum() {
       
       if (isShadowMode) {
         nextPhantomWins += 1;
-        if (nextPhantomWins >= 2) {
-          nextShadowMode = false;
-          justExitedShadow = true;
-          nextPhantomWins = 0;
-          nextStep = 1;
-          nextAttackStep = 0;
-          if (nextCdt < 3000) {
-            nextCdt = 0;
-          }
-        }
       } else {
         if (nextCdt === 0) {
           nextStep = 1;
@@ -780,13 +1208,32 @@ export default function MatreshkaQuantum() {
     };
 
     const newHistory = [...history, newEntry];
+    const newBankroll = initialBankroll + newHistory.reduce((acc, curr) => acc + curr.netProfit, 0);
+
+    // Phantom 2.0 Exit Logic
+    if (nextShadowMode && phantomConfig) {
+      if (phantomConfig.exitCondition === '2_WINS' && nextPhantomWins >= 2) {
+        nextShadowMode = false;
+        justExitedShadow = true;
+        nextPhantomWins = 0;
+        nextStep = 1;
+        nextAttackStep = 0;
+        if (nextCdt < 3000) nextCdt = 0;
+      } else if (phantomConfig.exitCondition === 'CDT_THRESHOLD' && nextCdt < 10000) {
+        nextShadowMode = false;
+        justExitedShadow = true;
+        nextPhantomWins = 0;
+        nextStep = 1;
+        nextAttackStep = 0;
+      } else if (phantomConfig.exitCondition === 'STREAK_BREAK' && isWin) {
+        nextShadowMode = false;
+        justExitedShadow = true;
+        nextPhantomWins = 0;
+      }
+    }
 
     const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(newHistory);
     
-    const rawTbb = Math.round((nextCdt + 1000) / 0.98);
-    const maxStrike = initialBankroll * 0.05;
-    const isSniper = rawTbb > maxStrike;
-
     if (nextShadowMode) {
       if (triggerStrike) {
         nextShadowMode = false;
@@ -794,11 +1241,106 @@ export default function MatreshkaQuantum() {
         nextPhantomWins = 0;
       }
     } else {
-      if (triggerPhantom || isSniper) {
+      if (triggerPhantom) {
         nextShadowMode = true;
         nextFrozenStep = nextStep;
         nextPhantomWins = 0;
       }
+    }
+
+    // Cycle Integrity Check
+    const cycleCheck = checkCycleIntegrity(newBankroll, cycleStartBalance, nextCycleSpinCount, initialBankroll);
+    
+    // Also check for CRITICAL stress shield auto-reset
+    let currentLossStreak = 0;
+    for (let i = newHistory.length - 1; i >= 0; i--) {
+      if (!newHistory[i].isWin && newHistory[i].outcome !== 'ZERO') {
+        currentLossStreak++;
+      } else if (newHistory[i].isWin) {
+        break;
+      }
+    }
+    const cyclePnL = newBankroll - cycleStartBalance;
+
+    if (cycleCheck.forceReset) {
+      // HARD RESET
+      nextCycleHistory.push({
+        id: cycleNumber,
+        spins: nextCycleSpinCount,
+        pnl: cyclePnL,
+        maxCdt: nextCdt,
+        ended: 'force_reset'
+      });
+      
+      nextCdt = 0;
+      nextStep = 1;
+      nextAttackStep = 0;
+      nextShadowMode = false;
+      nextPhantomWins = 0;
+      nextSpinsInCurrentMode = 0;
+      
+      nextCycleStartBalance = newBankroll;
+      nextCycleSpinCount = 0;
+      nextCycleNumber = cycleNumber + 1;
+      
+      playAlert();
+
+      // Enter Cooldown
+      nextIsCooldown = true;
+      nextCooldownSpins = 0;
+      nextResidualCdt = cdt; // Freeze old CDT
+      nextIsPostCooldown = false;
+      nextPostCooldownSpins = 0;
+    } else if (nextCdt === 0 && !nextIsCooldown) {
+      // Natural cycle end
+      if (nextCycleSpinCount > 0) {
+        nextCycleHistory.push({
+          id: cycleNumber,
+          spins: nextCycleSpinCount,
+          pnl: cyclePnL,
+          maxCdt: cdt,
+          ended: 'natural'
+        });
+        nextCycleStartBalance = newBankroll;
+        nextCycleSpinCount = 0;
+        nextCycleNumber = cycleNumber + 1;
+      }
+    }
+
+    // Process Exit Gate Cooldown
+    const exitGateResult = processExitGate(
+      cycleCheck.forceReset,
+      nextCdt,
+      nextIsCooldown,
+      nextCooldownSpins,
+      initialBankroll,
+      nextResidualCdt
+    );
+    
+    nextCdt = exitGateResult.newCdt;
+    nextIsCooldown = exitGateResult.isCooldown;
+    nextCooldownSpins = exitGateResult.newCooldownSpins;
+    
+    if (exitGateResult.isPostCooldown && !nextIsPostCooldown) {
+      nextIsPostCooldown = true;
+      nextPostCooldownSpins = 0;
+    }
+
+    if (nextIsPostCooldown) {
+      nextPostCooldownSpins++;
+      if (nextPostCooldownSpins >= POST_COOLDOWN_BASE_SPINS) {
+        nextIsPostCooldown = false;
+      }
+    }
+
+    // Mode Hysteresis Tracking
+    const nextWinrate30 = computeWinrate30(newHistory);
+    const nextDynamicCap = calculateDynamicCap(newBankroll, serverPhase, nextWinrate30);
+    const nextBaseBetResult = calculateNextBet(nextCdt, nextStep, nextWinrate30, nextDynamicCap, newBankroll, false, newHistory);
+    const newRecoveryMode = determineRecoveryMode(nextCdt, nextBaseBetResult.mode, nextSpinsInCurrentMode, nextWinrate30);
+    
+    if (newRecoveryMode !== recoveryMode) {
+        nextSpinsInCurrentMode = 0;
     }
 
     if (nextBet > 1000000) {
@@ -817,6 +1359,18 @@ export default function MatreshkaQuantum() {
     setFrozenStep(nextFrozenStep);
     setCdt(nextCdt);
     setPhantomWins(nextPhantomWins);
+    
+    setSpinsInCurrentMode(nextSpinsInCurrentMode);
+    setCycleStartBalance(nextCycleStartBalance);
+    setCycleSpinCount(nextCycleSpinCount);
+    setCycleNumber(nextCycleNumber);
+    setCycleHistory(nextCycleHistory);
+    setIsCooldown(nextIsCooldown);
+    setCooldownSpins(nextCooldownSpins);
+    setResidualCdt(nextResidualCdt);
+    setIsPostCooldown(nextIsPostCooldown);
+    setPostCooldownSpins(nextPostCooldownSpins);
+    setPreviousBet(nextBet);
 
     const nowMs = new Date().getTime();
     const timeSinceLast = sessionLogs.length > 0 ? nowMs - sessionLogs[sessionLogs.length - 1].timestamp : 0;
@@ -829,14 +1383,15 @@ export default function MatreshkaQuantum() {
       current_step: currentStep,
       current_balance: currentBankroll,
       server_state_detected: serverPhase,
-      time_since_last_spin: timeSinceLast
+      time_since_last_spin: timeSinceLast,
+      recovery_mode: recoveryMode,
+      dynamic_cap: dynamicCap
     };
     setSessionLogs([...sessionLogs, newLogEntry]);
 
     if (nextStep === 5) playHum();
     if (nextStep >= 4) playAlert();
 
-    const newBankroll = initialBankroll + newHistory.reduce((acc, curr) => acc + curr.netProfit, 0);
     if (newBankroll >= initialBankroll * 1.2 && !showSummary) {
       setShowSummary(true);
     }
@@ -872,18 +1427,12 @@ export default function MatreshkaQuantum() {
         let justExitedShadow = false;
 
         if (entry.outcome === 'ZERO') {
-            cdtVal += entry.betAmount;
-            if (shadow) {
+            cdtVal += Math.round(entry.betAmount * 0.5);
+            const recentZeros = currentHist.slice(-9).filter(h => h.outcome === 'ZERO').length;
+            if (recentZeros >= 1) {
+                shadow = true;
+                frozen = step;
                 phantomWinsVal = 0;
-            } else {
-                if (step < 4) {
-                    step++;
-                } else {
-                    shadow = true;
-                    frozen = 4;
-                    step = 4;
-                    phantomWinsVal = 0;
-                }
             }
         } else if (isWin) {
             cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.98));
@@ -924,10 +1473,6 @@ export default function MatreshkaQuantum() {
         const currentHistWithEntry = newHistory.slice(0, i + 1);
         const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(currentHistWithEntry);
         
-        const rawTbb = Math.round((cdtVal + 1000) / 0.98);
-        const maxStrike = initialBankroll * 0.05;
-        const isSniper = rawTbb > maxStrike;
-
         if (shadow) {
             if (triggerStrike) {
                 shadow = false;
@@ -935,7 +1480,7 @@ export default function MatreshkaQuantum() {
                 phantomWinsVal = 0;
             }
         } else {
-            if (triggerPhantom || isSniper) {
+            if (triggerPhantom) {
                 shadow = true;
                 frozen = step;
                 phantomWinsVal = 0;
@@ -957,6 +1502,19 @@ export default function MatreshkaQuantum() {
     setFrozenStep(frozen);
     setCdt(cdtVal);
     setPhantomWins(phantomWinsVal);
+
+    // Reset CIE variables on undo to prevent complex state mismatch
+    setSpinsInCurrentMode(0);
+    setCycleStartBalance(initialBankroll);
+    setCycleSpinCount(0);
+    setCycleNumber(1);
+    setCycleHistory([]);
+    setIsCooldown(false);
+    setCooldownSpins(0);
+    setResidualCdt(0);
+    setIsPostCooldown(false);
+    setPostCooldownSpins(0);
+    setPreviousBet(newHistory.length > 0 ? newHistory[newHistory.length - 1].betAmount : 1000);
   };
 
   const handleTakeProfit = () => {
@@ -976,6 +1534,7 @@ export default function MatreshkaQuantum() {
         maxDrawdown: maxDrawdown,
         durationMs: durationMs,
       },
+      cycleHistory: cycleHistory,
       logs: sessionLogs
     };
     
@@ -1060,6 +1619,23 @@ export default function MatreshkaQuantum() {
             <div className="text-[10px] text-gray-500 font-mono mt-0.5">
               Баланс: {Math.round(currentBankroll).toLocaleString('ru-RU')} ₽
             </div>
+            {profit < 0 && (
+              <div className="mt-2">
+                <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">
+                  Stop-Loss: {Math.round(sessionStopLossPercent)}% / 100%
+                </div>
+                <div className="w-full bg-gray-800 rounded-full h-2">
+                  <div
+                    className={`h-2 rounded-full transition-all ${
+                      sessionStopLossPercent < 50 ? 'bg-yellow-500' :
+                      sessionStopLossPercent < 80 ? 'bg-orange-500' :
+                      'bg-red-500 animate-pulse'
+                    }`}
+                    style={{ width: `${sessionStopLossPercent}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <button onClick={() => setShowResetConfirm(true)} className="text-gray-500 hover:text-white transition-colors p-2 bg-gray-900 rounded-lg border border-gray-800">
@@ -1078,36 +1654,56 @@ export default function MatreshkaQuantum() {
           animate={{ scale: 1, opacity: 1 }}
           className={`relative overflow-hidden rounded-3xl p-8 border-2 flex flex-col items-center justify-center min-h-[240px] shadow-2xl
               ${isShadowMode ? 'bg-black border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] animate-pulse' :
+              serverState === 'АЛЬФА-ИМПУЛЬС' ? 'bg-black border-cyan-400 shadow-[0_0_40px_rgba(34,211,238,0.6)] animate-pulse' :
               'bg-black border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.2)]'}`}
         >
           <div className="absolute top-4 right-5 text-right">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Состояние сервера</div>
-            <div className={`text-xs font-black tracking-widest uppercase ${isShadowMode ? 'text-purple-400' : serverState === 'ТРЕНД' ? 'text-blue-400' : serverState === 'ТУРБУЛЕНТНОСТЬ' ? 'text-yellow-400' : 'text-orange-400'}`}>
+            <div className={`text-xs font-black tracking-widest uppercase ${
+              isShadowMode ? 'text-purple-400' : 
+              serverState === 'АЛЬФА-ИМПУЛЬС' ? 'text-cyan-400 animate-pulse' :
+              serverState === 'АЛЬФА-ТРЕНД' ? 'text-blue-400' : 
+              serverState === 'ТРЕНД' ? 'text-blue-400' : 
+              serverState === 'ТУРБУЛЕНТНОСТЬ' ? 'text-yellow-400' : 
+              'text-orange-400'
+            }`}>
               {isShadowMode ? 'СЛИВ' : serverState}
             </div>
+            {zeroCountLast10 >= 2 && (
+              <div className="text-[10px] text-red-500 font-bold tracking-widest uppercase mt-1 animate-pulse">
+                ⚠ ZERO CLUSTER: {zeroCountLast10}/10
+              </div>
+            )}
           </div>
           <div className={`absolute top-4 left-5 font-black tracking-widest text-sm
             ${currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-yellow-500' : 'text-red-500'}`}>
             {isShadowMode ? `ШАГ: ${currentStep} (ФАНТОМ)` : attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
           </div>
 
-          {isShadowMode ? (
-             isSniperRecovery ? (
-               <div className="text-red-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-                 🎯 SNIPER RECOVERY: ПОИСК ИДЕАЛЬНОГО ПАТТЕРНА
-               </div>
-             ) : (
-               <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-                 👻 SHADOW MODE: PHANTOM PROTOCOL
-               </div>
-             )
+          {isCooldown ? (
+             <div className="text-blue-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+               🧊 EXIT GATE: COOLDOWN ({cooldownSpins}/{COOLDOWN_MAX_SPINS})
+             </div>
+          ) : isPostCooldown ? (
+             <div className="text-teal-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+               🔄 POST-COOLDOWN: {postCooldownSpins}/{POST_COOLDOWN_BASE_SPINS} спинов | BASE only
+             </div>
+          ) : isShadowMode ? (
+             <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+               👻 PHANTOM 2.0: {phantomConfig?.mode || 'OFFENSIVE'}
+             </div>
+          ) : recoveryMode !== 'BASE' ? (
+             <div className={`text-xs font-bold tracking-widest uppercase mb-3 mt-4 ${
+               recoveryMode === 'RECOVERY-FAST' ? 'text-emerald-400' :
+               recoveryMode === 'RECOVERY-MODERATE' ? 'text-yellow-400' :
+               recoveryMode === 'RECOVERY-SHADOW' ? 'text-slate-400' :
+               'text-red-500 animate-pulse'
+             }`}>
+               {recoveryMode === 'RECOVERY-SHADOW' ? '🛡 RECOVERY-SHADOW: WR < 46%. Conservativo.' : `🎯 ${recoveryMode}`}
+             </div>
           ) : attackStep > 0 ? (
              <div className="text-yellow-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🔥 РЕЖИМ АТАКИ: РЕИНВЕСТ ПРОФИТА
-             </div>
-          ) : cdt > 0 && currentStep >= 2 && !isShadowMode ? (
-             <div className="text-yellow-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-               🎯 SNIPER АКТИВЕН: ×1.3
              </div>
           ) : (
              <div className="text-gray-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4">СЛЕДУЮЩИЙ ХОД</div>
@@ -1255,13 +1851,23 @@ export default function MatreshkaQuantum() {
         <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 space-y-4">
           <div className="flex justify-between items-center">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Аналитика потока</div>
-            <div className={`text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-black border ${
-              isShadowMode ? 'text-red-500 border-red-500/30' :
-              confidenceValue > 60 ? 'text-emerald-400 border-emerald-500/30' :
-              confidenceValue >= 50 ? 'text-yellow-500 border-yellow-500/30' :
-              'text-red-500 border-red-500/30'
-            }`}>
-              Уверенность: {isShadowMode ? 'ФАНТОМ' : `${confidenceValue}%`}
+            <div className="flex gap-2">
+              <div className={`text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-black border ${
+                recoveryMode === 'RECOVERY-FAST' ? 'text-emerald-400 border-emerald-500/30' :
+                recoveryMode === 'RECOVERY-MODERATE' ? 'text-yellow-400 border-yellow-500/30' :
+                recoveryMode === 'RECOVERY-SHADOW' ? 'text-slate-400 border-slate-500/30' :
+                'text-gray-400 border-gray-700'
+              }`}>
+                MAX BET: 5% | {Math.round(currentBankroll * 0.05).toLocaleString('ru-RU')} ₽
+              </div>
+              <div className={`text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-black border ${
+                isShadowMode ? 'text-red-500 border-red-500/30' :
+                confidenceValue > 60 ? 'text-emerald-400 border-emerald-500/30' :
+                confidenceValue >= 50 ? 'text-yellow-500 border-yellow-500/30' :
+                'text-red-500 border-red-500/30'
+              }`}>
+                Уверенность: {isShadowMode ? 'ФАНТОМ' : `${confidenceValue}%`}
+              </div>
             </div>
           </div>
           
@@ -1284,7 +1890,8 @@ export default function MatreshkaQuantum() {
             <div>
               <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Альфа-Цвет</div>
               <div className={`text-xs font-mono font-bold ${getApexMatrix(history).alpha === 'RED' ? 'text-red-500' : getApexMatrix(history).alpha === 'BLACK' ? 'text-gray-400' : 'text-gray-500'}`}>
-                {getApexMatrix(history).alpha === 'RED' ? 'КРАСНОЕ' : getApexMatrix(history).alpha === 'BLACK' ? 'ЧЕРНОЕ' : 'НЕТ'}
+                {getApexMatrix(history).alpha === 'RED' ? 'КРАСНОЕ' : getApexMatrix(history).alpha === 'BLACK' ? 'ЧЕРНОЕ' : 'НЕТ'} 
+                {getApexMatrix(history).alpha !== 'NEUTRAL' && ` (conf: ${getApexMatrix(history).alphaConfidence})`}
               </div>
             </div>
             <div>
@@ -1358,6 +1965,32 @@ export default function MatreshkaQuantum() {
           </div>
         </div>
 
+        {/* CIE Stats Panel */}
+        <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 grid grid-cols-2 gap-4">
+          <div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">ЦИКЛ #{cycleNumber}</div>
+            <div className="text-lg font-mono font-bold text-white">{cycleSpinCount} <span className="text-xs text-gray-500 font-sans">СПИНОВ</span></div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">PNL ЦИКЛА</div>
+            <div className={`text-lg font-mono font-bold ${currentBankroll - cycleStartBalance >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
+              {currentBankroll - cycleStartBalance >= 0 ? '+' : ''}{Math.round(currentBankroll - cycleStartBalance).toLocaleString('ru-RU')} ₽
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">LOSS STREAK</div>
+            <div className={`text-sm font-bold ${currentLossStreak >= 8 ? 'text-red-500' : currentLossStreak >= 6 ? 'text-orange-500' : 'text-emerald-500'}`}>
+              {currentLossStreak}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold mb-1">HYSTERESIS</div>
+            <div className="text-sm font-bold text-gray-300">
+              {spinsInCurrentMode} СПИНОВ
+            </div>
+          </div>
+        </div>
+
         {/* Risk Meter */}
         <div className="w-full bg-gray-900/80 rounded-2xl p-5 border border-gray-800">
           <div className="flex justify-between items-center text-[10px] font-bold text-gray-500 mb-3 tracking-widest uppercase">
@@ -1425,6 +2058,14 @@ export default function MatreshkaQuantum() {
                   setFrozenStep(0);
                   setCdt(0);
                   setPhantomWins(0);
+                  setSpinsInCurrentMode(0);
+                  setCycleStartBalance(0);
+                  setCycleSpinCount(0);
+                  setCycleNumber(1);
+                  setCycleHistory([]);
+                  setIsCooldown(false);
+                  setCooldownSpins(0);
+                  setResidualCdt(0);
                   localStorage.removeItem('matreshka_state');
                 }}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
@@ -1483,6 +2124,14 @@ export default function MatreshkaQuantum() {
                     setFrozenStep(0);
                     setCdt(0);
                     setPhantomWins(0);
+                    setSpinsInCurrentMode(0);
+                    setCycleStartBalance(0);
+                    setCycleSpinCount(0);
+                    setCycleNumber(1);
+                    setCycleHistory([]);
+                    setIsCooldown(false);
+                    setCooldownSpins(0);
+                    setResidualCdt(0);
                     localStorage.removeItem('matreshka_state');
                   }}
                   className="flex-1 bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
