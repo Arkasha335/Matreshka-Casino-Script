@@ -331,7 +331,6 @@ const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outc
 
 export default function MatreshkaQuantum() {
   const [isClient, setIsClient] = useState(false);
-  const [userLabel, setUserLabel] = useState<string>('');
   const [initialBankroll, setInitialBankroll] = useState<number>(0);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [currentStep, setCurrentStep] = useState<number>(1);
@@ -371,18 +370,6 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsClient(true);
-
-    // Читаем label из cookie
-    const cookies = document.cookie.split('; ').find(r => r.startsWith('mq_token='));
-    if (cookies) {
-      const token = cookies.split('=')[1];
-      try {
-        // Декодируем JWT payload без верификации (только для UI)
-        const payload = JSON.parse(atob(token.split('.')[1]));
-        setUserLabel(payload.label);
-      } catch {}
-    }
-
     const saved = localStorage.getItem('matreshka_state');
     if (saved) {
       try {
@@ -1075,18 +1062,6 @@ export default function MatreshkaQuantum() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            {userLabel && (
-              <div className="text-[10px] text-gray-600 font-mono">{userLabel}</div>
-            )}
-            <button
-              onClick={() => {
-                document.cookie = 'mq_token=; path=/; max-age=0';
-                window.location.href = '/login';
-              }}
-              className="text-gray-500 hover:text-red-500 text-xs font-bold uppercase"
-            >
-              Выход
-            </button>
             <button onClick={() => setShowResetConfirm(true)} className="text-gray-500 hover:text-white transition-colors p-2 bg-gray-900 rounded-lg border border-gray-800">
               <RotateCcw size={18} />
             </button>
