@@ -28,6 +28,10 @@ async function edgeConfigRead() {
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${API_TOKEN}` },
   });
+  if (res.status === 404) {
+    // Ключ 'keys' ещё не создан — возвращаем пустой массив
+    return [] as LicenseEntry[];
+  }
   if (!res.ok) throw new Error(`Read failed: ${res.status}`);
   const data = await res.json();
   return (data.result?.value || []) as LicenseEntry[];
