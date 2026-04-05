@@ -18,6 +18,8 @@ interface LicenseEntry {
 export async function POST(req: NextRequest) {
   try {
     const { key } = await req.json();
+    console.log('Input key:', key.substring(0, 6) + '...' + key.substring(key.length - 4));
+    console.log('Input key length:', key.length);
     const inputHash = hashKey(key);
 
     const data = await get('keys');
