@@ -198,10 +198,10 @@ const getApexMatrix = (history: HistoryEntry[], window = 20) => {
   let omega: Outcome | 'NEUTRAL' = 'NEUTRAL';
   
   if (nonZero.length > 0) {
-    if (redCount / nonZero.length > 0.6) {
+    if (redCount / nonZero.length > 0.55) {
       alpha = 'RED';
       omega = 'BLACK';
-    } else if (blackCount / nonZero.length > 0.6) {
+    } else if (blackCount / nonZero.length > 0.55) {
       alpha = 'BLACK';
       omega = 'RED';
     }
@@ -230,8 +230,162 @@ const getApexMatrix = (history: HistoryEntry[], window = 20) => {
   };
 };
 
-const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendation: Outcome, confidence: number, state: string, triggerPhantom: boolean, triggerStrike: boolean } => {
-  if (history.length === 0) return { recommendation: 'RED', confidence: 50, state: 'АНАЛИЗ', triggerPhantom: false, triggerStrike: false };
+type Zone = 'GREEN' | 'YELLOW' | 'RED';
+
+function countStreaks(nonZero: HistoryEntry[]): number {
+  if (nonZero.length === 0) return 0;
+  let count = 1;
+  for (let i = 1; i < nonZero.length; i++) {
+    if (nonZero[i].outcome !== nonZero[i - 1].outcome) count++;
+  }
+  return count;
+}
+
+function detectZone(history: HistoryEntry[]): Zone {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-15);
+  const recentAll = history.slice(-10);
+  if (nonZero.length < 4) return 'GREEN';
+
+  let currentStreak = 1;
+  const lastColor = nonZero[nonZero.length - 1].outcome;
+  for (let i = nonZero.length - 2; i >= 0; i--) {
+    if (nonZero[i].outcome === lastColor) currentStreak++;
+    else break;
+  }
+
+  let alternations = 0;
+  for (let i = 1; i < nonZero.length; i++) {
+    if (nonZero[i].outcome !== nonZero[i - 1].outcome) alternations++;
+  }
+  const altRate = alternations / (nonZero.length - 1);
+
+  const zeroCount = recentAll.filter(h => h.outcome === 'ZERO').length;
+
+  const matrix = getApexMatrix(history);
+  const currentMaxStreak = matrix.currentActiveColor === 'RED'
+    ? matrix.maxStreakRed : matrix.maxStreakBlack;
+  const avgStreak = nonZero.length > 0
+    ? nonZero.length / Math.max(1, countStreaks(nonZero)) : 2.5;
+  const streakPressure = currentMaxStreak / avgStreak;
+
+  let riskScore = 0;
+
+  if (currentStreak >= 6) riskScore += 3;
+  else if (currentStreak >= 5) riskScore += 2;
+  else if (currentStreak >= 4) riskScore += 1;
+
+  if (zeroCount >= 3) riskScore += 2;
+  else if (zeroCount >= 2) riskScore += 1;
+
+  if (altRate >= 0.75) riskScore -= 2;
+  else if (altRate >= 0.60) riskScore -= 1;
+
+  if (streakPressure >= 2.0) riskScore += 1;
+
+  if (riskScore >= 3) return 'RED';
+  if (riskScore >= 1) return 'YELLOW';
+  return 'GREEN';
+}
+
+function shouldEnterProgression(
+  zone: Zone,
+  currentStep: number,
+  cdt: number
+): { enter: boolean; reason: string } {
+  if (zone === 'GREEN') {
+    return { enter: true, reason: 'Зебра — полная агрессия' };
+  }
+  if (zone === 'YELLOW') {
+    return { enter: true, reason: 'Пред-аномалия — шаг ≤ 3' };
+  }
+  if (zone === 'RED') {
+    if (cdt > 0 && currentStep <= 5) {
+      return { enter: true, reason: 'RED но уже в серии — продолжаем до шага 5' };
+    }
+    return { enter: false, reason: 'Аномалия — пауза' };
+  }
+  return { enter: true, reason: 'Default' };
+}
+
+function shouldExitRedPause(
+  newZone: Zone,
+  consecutiveWinsInPause: number,
+  cdt: number
+): boolean {
+  if (newZone === 'GREEN' || newZone === 'YELLOW') return true;
+  if (consecutiveWinsInPause >= 2) return true;
+  if (cdt < 5000) return true;
+  return false;
+}
+
+function calculateGreenBet(
+  cdt: number,
+  currentStep: number,
+  currentBankroll: number
+): number {
+  const tbb = Math.round((cdt + 1000) / 0.98);
+  const sniperMult = currentStep >= 2 ? 1.3 : 1.0;
+  const bet = Math.round(tbb * sniperMult);
+  return Math.max(1000, Math.min(bet, currentBankroll, 1000000));
+}
+
+function calculateYellowBet(
+  cdt: number,
+  currentStep: number,
+  currentBankroll: number
+): number {
+  const tbb = Math.round((cdt + 1000) / 0.98);
+  const stepMult = currentStep >= 3 ? 1.15 : 1.0;
+  const bet = Math.round(tbb * stepMult);
+  const cap = Math.max(10000, Math.round(currentBankroll * 0.02));
+  return Math.max(1000, Math.min(bet, cap, 1000000));
+}
+
+function calculateRedBet(): number {
+  return 1000;
+}
+
+function calculateBetForZone(
+  zone: Zone,
+  cdt: number,
+  currentStep: number,
+  currentBankroll: number
+): number {
+  switch (zone) {
+    case 'GREEN':
+      return calculateGreenBet(cdt, currentStep, currentBankroll);
+    case 'YELLOW':
+      return calculateYellowBet(cdt, currentStep, currentBankroll);
+    case 'RED':
+      const { enter } = shouldEnterProgression(zone, currentStep, cdt);
+      if (!enter) {
+        return calculateRedBet();
+      }
+      return calculateGreenBet(cdt, currentStep, currentBankroll);
+  }
+}
+
+function getZebraMomentum(history: HistoryEntry[]): { followL1: boolean; confidence: number } {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-6);
+  if (nonZero.length < 4) return { followL1: true, confidence: 55 };
+
+  let alternations = 0;
+  for (let i = 1; i < nonZero.length; i++) {
+    if (nonZero[i].outcome !== nonZero[i - 1].outcome) alternations++;
+  }
+  const altRate = alternations / (nonZero.length - 1);
+
+  if (altRate >= 0.80) {
+    return { followL1: false, confidence: 65 };
+  } else if (altRate >= 0.60) {
+    return { followL1: true, confidence: 55 };
+  } else {
+    return { followL1: true, confidence: 58 };
+  }
+}
+
+const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendation: Outcome, confidence: number, state: string } => {
+  if (history.length === 0) return { recommendation: 'RED', confidence: 50, state: 'АНАЛИЗ' };
 
   const matrix = getApexMatrix(history);
   const nonZero = history.filter(h => h.outcome !== 'ZERO');
@@ -239,8 +393,6 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
   let recommendation: Outcome = 'RED';
   let confidence = 50;
   let state = 'АНАЛИЗ';
-  let triggerPhantom = false;
-  let triggerStrike = false;
 
   // === MICRO-PATTERN DETECTOR (MPD) ===
   if (nonZero.length >= 4) {
@@ -253,20 +405,20 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
       recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
       confidence = 82;
       state = 'ЭХО-ПАТТЕРН';
-      return { recommendation, confidence, state, triggerPhantom: false, triggerStrike: false };
+      return { recommendation, confidence, state };
     }
 
     if (L1 === L2 && L2 === L3 && L4 !== L1) {
       recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
       confidence = 78;
       state = 'ВОЛНА (СЛОМ СЕРИИ)';
-      return { recommendation, confidence, state, triggerPhantom: false, triggerStrike: true };
+      return { recommendation, confidence, state };
     }
   }
 
   if (nonZero.length < 2) {
     recommendation = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
-    return { recommendation, confidence, state, triggerPhantom, triggerStrike };
+    return { recommendation, confidence, state };
   }
 
   const L1 = nonZero[nonZero.length - 1].outcome;
@@ -278,7 +430,6 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
     recommendation = matrix.currentActiveColor === 'RED' ? 'BLACK' : 'RED';
     confidence = 90;
     state = 'ОТСКОК ОТ ПОТОЛКА';
-    triggerStrike = true;
   } else if (L1 === L2) {
     if (L1 === matrix.alpha && currentMaxStreak > 2) {
       recommendation = L1;
@@ -288,16 +439,20 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
       recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
       confidence = 30;
       state = 'ОМЕГА-ЛОВУШКА';
-      triggerPhantom = true;
     } else {
       recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
       confidence = 50;
       state = 'НЕЙТРАЛЬНО';
     }
   } else {
-    recommendation = L1;
-    confidence = 55;
-    state = 'ЧЕРЕДОВАНИЕ';
+    const zebra = getZebraMomentum(history);
+    if (zebra.followL1) {
+      recommendation = L1;
+    } else {
+      recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+    }
+    confidence = zebra.confidence;
+    state = zebra.followL1 ? 'ЧЕРЕДОВАНИЕ (FOLLOW)' : 'ЧЕРЕДОВАНИЕ (BREAK)';
   }
   
   if (L1 === matrix.alpha && L2 === matrix.omega) {
@@ -310,11 +465,10 @@ const getRecommendationAndConfidence = (history: HistoryEntry[]): { recommendati
       recommendation = matrix.alpha;
       confidence = 85;
       state = 'ЗАРОЖДЕНИЕ АЛЬФЫ';
-      triggerStrike = true;
     }
   }
 
-  return { recommendation, confidence, state, triggerPhantom, triggerStrike };
+  return { recommendation, confidence, state };
 };
 
 const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outcome }) {
@@ -347,20 +501,20 @@ export default function MatreshkaQuantum() {
   const [isEditingBet, setIsEditingBet] = useState(false);
   const [editBetValue, setEditBetValue] = useState('');
   const [sessionLogs, setSessionLogs] = useState<SessionLogEntry[]>([]);
-  const [isShadowMode, setIsShadowMode] = useState(false);
-  const [frozenStep, setFrozenStep] = useState<number>(0);
+  const [currentZone, setCurrentZone] = useState<Zone>('GREEN');
+  const [isRedPause, setIsRedPause] = useState<boolean>(false);
+  const [consecutivePauseWins, setConsecutivePauseWins] = useState<number>(0);
   const [cdt, setCdt] = useState<number>(0);
-  const [phantomWins, setPhantomWins] = useState<number>(0);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isShadowMode) {
+    if (isRedPause) {
       interval = setInterval(() => {
         playHum();
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [isShadowMode]);
+  }, [isRedPause]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -378,10 +532,10 @@ export default function MatreshkaQuantum() {
         setHistory(parsed.history || []);
         setCurrentStep(parsed.currentStep || 1);
         setAttackStep(parsed.attackStep || 0);
-        setIsShadowMode(parsed.isShadowMode || false);
-        setFrozenStep(parsed.frozenStep || 0);
+        setIsRedPause(parsed.isRedPause || false);
+        setConsecutivePauseWins(parsed.consecutivePauseWins || 0);
         setCdt(parsed.cdt || 0);
-        setPhantomWins(parsed.phantomWins || 0);
+        setCurrentZone(parsed.currentZone || 'GREEN');
         if (parsed.sessionStartTime) setSessionStartTime(parsed.sessionStartTime);
       } catch (e) {
         console.error("Failed to parse saved state", e);
@@ -398,10 +552,10 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_state', JSON.stringify({
-        initialBankroll, history, currentStep, attackStep, sessionStartTime, isShadowMode, frozenStep, cdt, phantomWins
+        initialBankroll, history, currentStep, attackStep, sessionStartTime, isRedPause, consecutivePauseWins, cdt, currentZone
       }));
     }
-  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, isShadowMode, frozenStep, cdt, phantomWins]);
+  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, isRedPause, consecutivePauseWins, cdt, currentZone]);
 
   const saveCurrentSession = () => {
     if (history.length === 0) return;
@@ -467,9 +621,17 @@ export default function MatreshkaQuantum() {
                     <p className="text-sm text-gray-300 mb-1">
                       SNIPER: <span className="font-bold text-yellow-500">TBB × 1.3 (шаг ≥ 2)</span>
                     </p>
-                    <p className="text-xs text-gray-400 mt-2">
-                      Ваш баланс выдержит <span className="font-bold text-emerald-400">{maxSteps}</span> шагов прогрессии.
-                    </p>
+                    <div className="text-xs text-gray-400 mt-2 space-y-1">
+                      <p>Минимальный баланс: <span className="text-white">500,000 ₽</span> {parsedBankroll < 500000 ? '⛔' : '⚠'}</p>
+                      <p>Комфортный баланс: <span className="text-white">2,000,000 ₽</span> {parsedBankroll >= 2000000 ? '✓' : ''}</p>
+                      <p>Оптимальный баланс: <span className="text-white">5,000,000 ₽</span> {parsedBankroll >= 5000000 ? '✓✓' : ''}</p>
+                      <p className="mt-2 font-bold">
+                        {parsedBankroll < 500000 ? <span className="text-red-400">⛔ Ниже минимума — высокий риск</span> :
+                         parsedBankroll < 2000000 ? <span className="text-yellow-400">⚠ Рабочий минимум</span> :
+                         parsedBankroll < 5000000 ? <span className="text-emerald-400">✓ Комфортная игра</span> :
+                         <span className="text-emerald-400">✓✓ Оптимально</span>}
+                      </p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -527,6 +689,13 @@ export default function MatreshkaQuantum() {
   const recentWins = recentBets.filter(h => h.isWin).length;
   const winrate = recentBets.length > 0 ? recentWins / recentBets.length : 0;
 
+  const nonZeroRecent = history.filter(h => h.outcome !== 'ZERO').slice(-15);
+  let alternations = 0;
+  for (let i = 1; i < nonZeroRecent.length; i++) {
+    if (nonZeroRecent[i].outcome !== nonZeroRecent[i - 1].outcome) alternations++;
+  }
+  const altRateUI = nonZeroRecent.length > 1 ? Math.round((alternations / (nonZeroRecent.length - 1)) * 100) : 0;
+
   let serverPhase = 'АНАЛИЗ ТРЕНДА';
   if (recentBets.length >= 3) {
     if (winrate > 0.45) serverPhase = 'СТАБИЛЬНО';
@@ -540,7 +709,7 @@ export default function MatreshkaQuantum() {
     serverPhase = 'СЛИВ';
   }
 
-  let { recommendation: baseRecommendation, confidence: confidenceValue, state: serverState, triggerPhantom, triggerStrike } = getRecommendationAndConfidence(history);
+  let { recommendation: baseRecommendation, confidence: confidenceValue, state: serverState } = getRecommendationAndConfidence(history);
 
   if (zeroCountLast10 >= 2) {
     serverState = 'СЛИВ';
@@ -552,18 +721,13 @@ export default function MatreshkaQuantum() {
   let nextBet = 1000;
   let isPhantomBet = false;
 
-  if (isShadowMode) {
-      nextBet = 1000;
+  if (isRedPause) {
+      nextBet = calculateRedBet();
       isPhantomBet = true;
   } else if (manualBet !== null) {
       nextBet = manualBet;
-  } else if (cdt > 0) {
-      // SNIPER: при шаге >= 2 увеличиваем ставку на 30%
-      let sniperMultiplier = currentStep >= 2 ? 1.3 : 1.0;
-      let sniperBet = Math.round(rawTbb * sniperMultiplier);
-      nextBet = Math.max(1000, Math.min(sniperBet, maxStrikeBet, 1000000));
   } else {
-      nextBet = 1000;
+      nextBet = calculateBetForZone(currentZone, cdt, currentStep, currentBankroll);
   }
 
   if (nextBet > currentBankroll && currentBankroll > 0 && !isPhantomBet) {
@@ -704,11 +868,9 @@ export default function MatreshkaQuantum() {
     let netProfit = 0;
     let nextStep = currentStep;
     let nextAttackStep = attackStep;
-    let nextShadowMode = isShadowMode;
-    let nextFrozenStep = frozenStep;
     let nextCdt = cdt;
-    let justExitedShadow = false;
-    let nextPhantomWins = phantomWins;
+    let nextIsRedPause = isRedPause;
+    let nextConsecutivePauseWins = consecutivePauseWins;
 
     if (outcome === 'ZERO') {
       isWin = false;
@@ -716,36 +878,15 @@ export default function MatreshkaQuantum() {
       nextCdt += nextBet;
       setZeroMessage(true);
       setTimeout(() => setZeroMessage(false), 4000);
-      if (isShadowMode) {
-        nextPhantomWins = 0;
-      } else {
-        if (currentStep < 4) {
-          nextStep = currentStep + 1;
-        } else {
-          nextShadowMode = true;
-          nextFrozenStep = 4;
-          nextStep = 4;
-          nextPhantomWins = 0;
-        }
-      }
+      // Zero не повышает шаг
     } else if (recommendation === outcome) {
       isWin = true;
       netProfit = nextBet * 0.98; // 2% tax on win
       nextCdt = Math.max(0, nextCdt - netProfit);
       if (nextCdt < 10) nextCdt = 0;
       
-      if (isShadowMode) {
-        nextPhantomWins += 1;
-        if (nextPhantomWins >= 2) {
-          nextShadowMode = false;
-          justExitedShadow = true;
-          nextPhantomWins = 0;
-          nextStep = 1;
-          nextAttackStep = 0;
-          if (nextCdt < 3000) {
-            nextCdt = 0;
-          }
-        }
+      if (nextIsRedPause) {
+        nextConsecutivePauseWins += 1;
       } else {
         if (nextCdt === 0) {
           nextStep = 1;
@@ -756,16 +897,12 @@ export default function MatreshkaQuantum() {
       isWin = false;
       netProfit = -nextBet;
       nextCdt += nextBet;
-      if (isShadowMode) {
-        nextPhantomWins = 0;
+
+      if (nextIsRedPause) {
+        nextConsecutivePauseWins = 0;
       } else {
         if (currentStep < 4) {
           nextStep = currentStep + 1;
-        } else {
-          nextShadowMode = true;
-          nextFrozenStep = 4;
-          nextStep = 4;
-          nextPhantomWins = 0;
         }
       }
     }
@@ -779,44 +916,41 @@ export default function MatreshkaQuantum() {
       netProfit
     };
 
-    const newHistory = [...history, newEntry];
+    const finalHistory = [...history, newEntry];
+    const newZone = detectZone(finalHistory);
 
-    const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(newHistory);
-    
-    const rawTbb = Math.round((nextCdt + 1000) / 0.98);
-    const maxStrike = initialBankroll * 0.05;
-    const isSniper = rawTbb > maxStrike;
-
-    if (nextShadowMode) {
-      if (triggerStrike) {
-        nextShadowMode = false;
-        justExitedShadow = true;
-        nextPhantomWins = 0;
+    if (nextIsRedPause) {
+      if (shouldExitRedPause(newZone, nextConsecutivePauseWins, nextCdt)) {
+        nextIsRedPause = false;
+        nextConsecutivePauseWins = 0;
       }
     } else {
-      if (triggerPhantom || isSniper) {
-        nextShadowMode = true;
-        nextFrozenStep = nextStep;
-        nextPhantomWins = 0;
+      if (!isWin && outcome !== 'ZERO' && currentStep >= 4 && newZone === 'RED') {
+        nextIsRedPause = true;
+        nextConsecutivePauseWins = 0;
+      }
+      if (newZone === 'RED' && nextCdt === 0) {
+        nextIsRedPause = true;
+        nextConsecutivePauseWins = 0;
       }
     }
 
-    if (nextBet > 1000000) {
+    if (nextBet >= 1000000) {
       alert('ЛИМИТ СТОЛА');
       nextCdt = 0;
       nextStep = 1;
       nextAttackStep = 0;
-      nextShadowMode = false;
-      nextPhantomWins = 0;
+      nextIsRedPause = false;
+      nextConsecutivePauseWins = 0;
     }
 
-    setHistory(newHistory);
+    setHistory(finalHistory);
     setCurrentStep(nextStep);
     setAttackStep(nextAttackStep);
-    setIsShadowMode(nextShadowMode);
-    setFrozenStep(nextFrozenStep);
     setCdt(nextCdt);
-    setPhantomWins(nextPhantomWins);
+    setCurrentZone(newZone);
+    setIsRedPause(nextIsRedPause);
+    setConsecutivePauseWins(nextConsecutivePauseWins);
 
     const nowMs = new Date().getTime();
     const timeSinceLast = sessionLogs.length > 0 ? nowMs - sessionLogs[sessionLogs.length - 1].timestamp : 0;
@@ -836,7 +970,7 @@ export default function MatreshkaQuantum() {
     if (nextStep === 5) playHum();
     if (nextStep >= 4) playAlert();
 
-    const newBankroll = initialBankroll + newHistory.reduce((acc, curr) => acc + curr.netProfit, 0);
+    const newBankroll = initialBankroll + finalHistory.reduce((acc, curr) => acc + curr.netProfit, 0);
     if (newBankroll >= initialBankroll * 1.2 && !showSummary) {
       setShowSummary(true);
     }
@@ -858,10 +992,10 @@ export default function MatreshkaQuantum() {
 
     let step = 1;
     let aStep = 0;
-    let shadow = false;
-    let frozen = 0;
     let cdtVal = 0;
-    let phantomWinsVal = 0;
+    let isRedPauseVal = false;
+    let consecutivePauseWinsVal = 0;
+    let currentZoneVal: Zone = 'GREEN';
     
     for (let i = 0; i < newHistory.length; i++) {
         const entry = newHistory[i];
@@ -869,36 +1003,15 @@ export default function MatreshkaQuantum() {
         const { recommendation: rec } = getRecommendationAndConfidence(currentHist);
         
         let isWin = (entry.outcome === rec && entry.outcome !== 'ZERO');
-        let justExitedShadow = false;
 
         if (entry.outcome === 'ZERO') {
             cdtVal += entry.betAmount;
-            if (shadow) {
-                phantomWinsVal = 0;
-            } else {
-                if (step < 4) {
-                    step++;
-                } else {
-                    shadow = true;
-                    frozen = 4;
-                    step = 4;
-                    phantomWinsVal = 0;
-                }
-            }
         } else if (isWin) {
             cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.98));
             if (cdtVal < 10) cdtVal = 0;
             
-            if (shadow) {
-                phantomWinsVal++;
-                if (phantomWinsVal >= 2) {
-                    shadow = false;
-                    justExitedShadow = true;
-                    phantomWinsVal = 0;
-                    step = 1;
-                    aStep = 0;
-                    cdtVal = 0;
-                }
+            if (isRedPauseVal) {
+                consecutivePauseWinsVal++;
             } else {
                 if (cdtVal === 0) {
                     step = 1;
@@ -907,56 +1020,50 @@ export default function MatreshkaQuantum() {
             }
         } else {
             cdtVal += entry.betAmount;
-            if (shadow) {
-                phantomWinsVal = 0;
+            if (isRedPauseVal) {
+                consecutivePauseWinsVal = 0;
             } else {
                 if (step < 4) {
                     step++;
-                } else {
-                    shadow = true;
-                    frozen = 4;
-                    step = 4;
-                    phantomWinsVal = 0;
                 }
             }
         }
 
         const currentHistWithEntry = newHistory.slice(0, i + 1);
-        const { triggerPhantom, triggerStrike } = getRecommendationAndConfidence(currentHistWithEntry);
-        
-        const rawTbb = Math.round((cdtVal + 1000) / 0.98);
-        const maxStrike = initialBankroll * 0.05;
-        const isSniper = rawTbb > maxStrike;
+        const newZone = detectZone(currentHistWithEntry);
+        currentZoneVal = newZone;
 
-        if (shadow) {
-            if (triggerStrike) {
-                shadow = false;
-                justExitedShadow = true;
-                phantomWinsVal = 0;
-            }
+        if (isRedPauseVal) {
+          if (shouldExitRedPause(newZone, consecutivePauseWinsVal, cdtVal)) {
+            isRedPauseVal = false;
+            consecutivePauseWinsVal = 0;
+          }
         } else {
-            if (triggerPhantom || isSniper) {
-                shadow = true;
-                frozen = step;
-                phantomWinsVal = 0;
-            }
+          if (!isWin && entry.outcome !== 'ZERO' && step >= 4 && newZone === 'RED') {
+            isRedPauseVal = true;
+            consecutivePauseWinsVal = 0;
+          }
+          if (newZone === 'RED' && cdtVal === 0) {
+            isRedPauseVal = true;
+            consecutivePauseWinsVal = 0;
+          }
         }
 
         if (entry.betAmount > 1000000) {
             cdtVal = 0;
             step = 1;
             aStep = 0;
-            shadow = false;
-            phantomWinsVal = 0;
+            isRedPauseVal = false;
+            consecutivePauseWinsVal = 0;
         }
     }
     
     setCurrentStep(step);
     setAttackStep(aStep);
-    setIsShadowMode(shadow);
-    setFrozenStep(frozen);
     setCdt(cdtVal);
-    setPhantomWins(phantomWinsVal);
+    setCurrentZone(currentZoneVal);
+    setIsRedPause(isRedPauseVal);
+    setConsecutivePauseWins(consecutivePauseWinsVal);
   };
 
   const handleTakeProfit = () => {
@@ -1072,40 +1179,43 @@ export default function MatreshkaQuantum() {
       <main className="max-w-md mx-auto p-4 space-y-6">
 
         {/* Main Display */}
-        <motion.div
+          <motion.div
           key={`${currentStep}-${attackStep}`}
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           className={`relative overflow-hidden rounded-3xl p-8 border-2 flex flex-col items-center justify-center min-h-[240px] shadow-2xl
-              ${isShadowMode ? 'bg-black border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] animate-pulse' :
+              ${isRedPause ? 'bg-black border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] animate-pulse' :
               'bg-black border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.2)]'}`}
         >
           <div className="absolute top-4 right-5 text-right">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Состояние сервера</div>
-            <div className={`text-xs font-black tracking-widest uppercase ${isShadowMode ? 'text-purple-400' : serverState === 'ТРЕНД' ? 'text-blue-400' : serverState === 'ТУРБУЛЕНТНОСТЬ' ? 'text-yellow-400' : 'text-orange-400'}`}>
-              {isShadowMode ? 'СЛИВ' : serverState}
+            <div className={`text-xs font-black tracking-widest uppercase ${isRedPause ? 'text-purple-400' : currentZone === 'GREEN' ? 'text-emerald-400' : currentZone === 'YELLOW' ? 'text-yellow-400' : 'text-red-400'}`}>
+              {isRedPause ? '⏸ ПАУЗА (Аномалия)' :
+               currentZone === 'GREEN' ? '🟢 ЗЕБРА' :
+               currentZone === 'YELLOW' ? '🟡 ПРЕД-АНОМАЛИЯ' :
+               '🔴 АНОМАЛИЯ'}
             </div>
           </div>
           <div className={`absolute top-4 left-5 font-black tracking-widest text-sm
             ${currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-yellow-500' : 'text-red-500'}`}>
-            {isShadowMode ? `ШАГ: ${currentStep} (ФАНТОМ)` : attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
+            {isRedPause ? `ШАГ: ${currentStep} (ПАУЗА)` : attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
           </div>
 
-          {isShadowMode ? (
+          {isRedPause ? (
              isSniperRecovery ? (
                <div className="text-red-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                  🎯 SNIPER RECOVERY: ПОИСК ИДЕАЛЬНОГО ПАТТЕРНА
                </div>
              ) : (
                <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-                 👻 SHADOW MODE: PHANTOM PROTOCOL
+                 ⏸ RED PAUSE: ОЖИДАНИЕ ЗЕЛЕНОЙ ЗОНЫ
                </div>
              )
           ) : attackStep > 0 ? (
              <div className="text-yellow-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🔥 РЕЖИМ АТАКИ: РЕИНВЕСТ ПРОФИТА
              </div>
-          ) : cdt > 0 && currentStep >= 2 && !isShadowMode ? (
+          ) : cdt > 0 && currentStep >= 2 && !isRedPause ? (
              <div className="text-yellow-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🎯 SNIPER АКТИВЕН: ×1.3
              </div>
@@ -1114,7 +1224,7 @@ export default function MatreshkaQuantum() {
           )}
 
           <div className={`text-5xl sm:text-6xl font-black tracking-tighter mb-4
-              ${isShadowMode ? 'text-purple-400' :
+              ${isRedPause ? 'text-purple-400' :
               attackStep > 0 ? 'text-yellow-500' :
               recommendation === 'RED' ? 'text-red-500' :
               recommendation === 'BLACK' ? 'text-white' :
@@ -1163,7 +1273,7 @@ export default function MatreshkaQuantum() {
               </div>
             ) : (
               <>
-                <span>СТАВКА: {Math.round(nextBet).toLocaleString('ru-RU')} ₽ {isShadowMode && '(PHANTOM)'}</span>
+                <span>СТАВКА: {Math.round(nextBet).toLocaleString('ru-RU')} ₽ {isRedPause && '(ПАУЗА)'}</span>
                 <button
                   onClick={() => {
                     setEditBetValue(Math.round(nextBet).toString());
@@ -1251,17 +1361,34 @@ export default function MatreshkaQuantum() {
           <Undo2 size={16} /> Отменить Последний Ввод
         </button>
 
+        {/* Zone Indicator */}
+        <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 space-y-4">
+          <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Индикатор Зоны</div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Текущая Зона</div>
+              <div className={`text-xs font-mono font-bold ${currentZone === 'GREEN' ? 'text-emerald-400' : currentZone === 'YELLOW' ? 'text-yellow-400' : 'text-red-500'}`}>
+                {currentZone === 'GREEN' ? '🟢 ЗЕБРА' : currentZone === 'YELLOW' ? '🟡 ПРЕД-АНОМАЛИЯ' : '🔴 АНОМАЛИЯ'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Чередование (Alt)</div>
+              <div className="text-xs font-mono font-bold text-white">{altRateUI}%</div>
+            </div>
+          </div>
+        </div>
+
         {/* Analytics HUD */}
         <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 space-y-4">
           <div className="flex justify-between items-center">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Аналитика потока</div>
             <div className={`text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-black border ${
-              isShadowMode ? 'text-red-500 border-red-500/30' :
+              isRedPause ? 'text-red-500 border-red-500/30' :
               confidenceValue > 60 ? 'text-emerald-400 border-emerald-500/30' :
               confidenceValue >= 50 ? 'text-yellow-500 border-yellow-500/30' :
               'text-red-500 border-red-500/30'
             }`}>
-              Уверенность: {isShadowMode ? 'ФАНТОМ' : `${confidenceValue}%`}
+              Уверенность: {isRedPause ? 'ПАУЗА' : `${confidenceValue}%`}
             </div>
           </div>
           
@@ -1421,10 +1548,9 @@ export default function MatreshkaQuantum() {
                   setCurrentStep(1);
                   setAttackStep(0);
                   setSessionLogs([]);
-                  setIsShadowMode(false);
-                  setFrozenStep(0);
+                  setIsRedPause(false);
+                  setConsecutivePauseWins(0);
                   setCdt(0);
-                  setPhantomWins(0);
                   localStorage.removeItem('matreshka_state');
                 }}
                 className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
@@ -1479,10 +1605,9 @@ export default function MatreshkaQuantum() {
                     setAttackStep(0);
                     setShowSummary(false);
                     setSessionLogs([]);
-                    setIsShadowMode(false);
-                    setFrozenStep(0);
+                    setIsRedPause(false);
+                    setConsecutivePauseWins(0);
                     setCdt(0);
-                    setPhantomWins(0);
                     localStorage.removeItem('matreshka_state');
                   }}
                   className="flex-1 bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-xl uppercase tracking-widest transition-colors text-sm"
