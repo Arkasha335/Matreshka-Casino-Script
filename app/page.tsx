@@ -288,7 +288,7 @@ function detectMode(history: HistoryEntry[]): ServerMode {
   if (currentStreak >= 7) score -= 8;
   else if (currentStreak === 6) score -= 6;
   else if (currentStreak === 5) score -= 4;
-  else if (currentStreak === 4) score -= 2;
+  else if (currentStreak === 4) score -= 1;
   else if (currentStreak === 3) score += 0;
   else if (currentStreak <= 2) score += 2;
 
@@ -379,7 +379,7 @@ function getEngineParams(mode: ServerMode, bankroll: number) {
     };
   } else if (mode === 'TRANSITION') {
     return {
-      baseBet: fullBaseBet * 0.67,
+      baseBet: Math.max(1000, fullBaseBet * 0.67),
       growthFactor: 2.2, // v10.0 proven value
       sniperMult: fixedSniperMult
     };
