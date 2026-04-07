@@ -54,6 +54,7 @@ interface SessionLogEntry {
   current_balance: number;
   server_state_detected: string;
   time_since_last_spin: number;
+  current_mode?: ServerMode;
 }
 
 // Audio Engine
@@ -230,139 +231,190 @@ const getApexMatrix = (history: HistoryEntry[], window = 20) => {
   };
 };
 
-type Zone = 'GREEN' | 'YELLOW' | 'RED';
+type ServerMode = 'ZEBRA' | 'TRANSITION' | 'DANGER';
 
-function countStreaks(nonZero: HistoryEntry[]): number {
+function calcCurrentStreak(nonZero: HistoryEntry[]): number {
   if (nonZero.length === 0) return 0;
-  let count = 1;
-  for (let i = 1; i < nonZero.length; i++) {
-    if (nonZero[i].outcome !== nonZero[i - 1].outcome) count++;
+  let streak = 1;
+  const lastColor = nonZero[nonZero.length - 1].outcome;
+  for (let i = nonZero.length - 2; i >= 0; i--) {
+    if (nonZero[i].outcome === lastColor) streak++;
+    else break;
   }
+  return streak;
+}
+
+function calcAlternation(arr: HistoryEntry[]): number {
+  if (arr.length < 3) return 0.5;
+  let transitions = 0;
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i].outcome !== arr[i - 1].outcome) transitions++;
+  }
+  return transitions / (arr.length - 1);
+}
+
+function countStreaksGTE(nonZero: HistoryEntry[], minLen: number): number {
+  if (nonZero.length === 0) return 0;
+  let count = 0;
+  let currentStreak = 1;
+  let lastColor = nonZero[0].outcome;
+  
+  for (let i = 1; i < nonZero.length; i++) {
+    if (nonZero[i].outcome === lastColor) {
+      currentStreak++;
+    } else {
+      if (currentStreak >= minLen) count++;
+      currentStreak = 1;
+      lastColor = nonZero[i].outcome;
+    }
+  }
+  if (currentStreak >= minLen) count++;
   return count;
 }
 
-function detectZone(history: HistoryEntry[]): Zone {
-  const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-15);
-  const recentAll = history.slice(-10);
-  if (nonZero.length < 4) return 'GREEN';
+function detectMode(history: HistoryEntry[]): ServerMode {
+  const nonZero = history.filter(h => h.outcome !== 'ZERO');
+  if (nonZero.length < 3) return 'ZEBRA';
 
-  let currentStreak = 1;
-  const lastColor = nonZero[nonZero.length - 1].outcome;
-  for (let i = nonZero.length - 2; i >= 0; i--) {
-    if (nonZero[i].outcome === lastColor) currentStreak++;
-    else break;
-  }
+  const currentStreak = calcCurrentStreak(nonZero);
+  const fastAltRate = calcAlternation(nonZero.slice(-6));
+  const slowAltRate = calcAlternation(nonZero.slice(-15));
+  const streak3plusCount = countStreaksGTE(nonZero.slice(-15), 3);
+  const zeroCount = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
 
-  let alternations = 0;
-  for (let i = 1; i < nonZero.length; i++) {
-    if (nonZero[i].outcome !== nonZero[i - 1].outcome) alternations++;
-  }
-  const altRate = alternations / (nonZero.length - 1);
+  let score = 0;
 
-  const zeroCount = recentAll.filter(h => h.outcome === 'ZERO').length;
+  // Current streak
+  if (currentStreak >= 7) score -= 8;
+  else if (currentStreak === 6) score -= 6;
+  else if (currentStreak === 5) score -= 4;
+  else if (currentStreak === 4) score -= 2;
+  else if (currentStreak === 3) score += 0;
+  else if (currentStreak <= 2) score += 2;
 
-  const matrix = getApexMatrix(history);
-  const currentMaxStreak = matrix.currentActiveColor === 'RED'
-    ? matrix.maxStreakRed : matrix.maxStreakBlack;
-  const avgStreak = nonZero.length > 0
-    ? nonZero.length / Math.max(1, countStreaks(nonZero)) : 2.5;
-  const streakPressure = currentMaxStreak / avgStreak;
+  // Fast alternation rate
+  if (fastAltRate >= 0.80) score += 3;
+  else if (fastAltRate >= 0.60) score += 1;
+  else if (fastAltRate < 0.30) score -= 2;
+  else score += 0; // 0.30-0.59
 
-  let riskScore = 0;
+  // Slow alternation rate
+  if (slowAltRate >= 0.70) score += 1;
+  else if (slowAltRate < 0.40) score -= 1;
 
-  if (currentStreak >= 6) riskScore += 3;
-  else if (currentStreak >= 5) riskScore += 2;
-  else if (currentStreak >= 4) riskScore += 1;
+  // Streak density
+  if (streak3plusCount >= 3) score -= 2;
+  else if (streak3plusCount === 2) score -= 1;
+  else if (streak3plusCount === 1) score += 0;
+  else if (streak3plusCount === 0) score += 1;
 
-  if (zeroCount >= 3) riskScore += 2;
-  else if (zeroCount >= 2) riskScore += 1;
+  // Zero count
+  if (zeroCount >= 3) score -= 3;
+  else if (zeroCount === 2) score -= 1;
+  else score += 0; // 0-1
 
-  if (altRate >= 0.75) riskScore -= 2;
-  else if (altRate >= 0.60) riskScore -= 1;
-
-  if (streakPressure >= 2.0) riskScore += 1;
-
-  if (riskScore >= 3) return 'RED';
-  if (riskScore >= 1) return 'YELLOW';
-  return 'GREEN';
+  if (score >= 2) return 'ZEBRA';
+  if (score <= -2) return 'DANGER';
+  return 'TRANSITION';
 }
 
-function shouldEnterProgression(
-  zone: Zone,
-  currentStep: number,
-  cdt: number
-): { enter: boolean; reason: string } {
-  if (zone === 'GREEN') {
-    return { enter: true, reason: 'Зебра — полная агрессия' };
+function detectModeWithHysteresis(
+  history: HistoryEntry[],
+  prevMode: ServerMode,
+  currMode: ServerMode,
+  spinsSinceDangerExit: number,
+  spinsInCurrentMode: number
+): { mode: ServerMode, newPrevMode: ServerMode, newSpinsSinceDangerExit: number, newSpinsInCurrentMode: number } {
+  const rawMode = detectMode(history);
+  let newMode = rawMode;
+  
+  let newSpinsSinceDangerExit = spinsSinceDangerExit + 1;
+  let newSpinsInCurrentMode = spinsInCurrentMode + 1;
+  let newPrevMode = prevMode;
+
+  // Rule 1: DANGER minimum hold (3 spins)
+  if (currMode === 'DANGER' && spinsInCurrentMode < 3) {
+    newMode = 'DANGER';
   }
-  if (zone === 'YELLOW') {
-    return { enter: true, reason: 'Пред-аномалия — шаг ≤ 3' };
+  
+  // Rule 2: Post-DANGER cooldown (5 spins in TRANSITION)
+  if (currMode === 'DANGER' && newMode !== 'DANGER' && spinsInCurrentMode >= 3) {
+    // Exiting DANGER
+    newMode = 'TRANSITION';
+    newSpinsSinceDangerExit = 0;
+  } else if (newSpinsSinceDangerExit < 5 && newMode === 'ZEBRA') {
+    // Cannot enter ZEBRA during cooldown
+    newMode = 'TRANSITION';
   }
-  if (zone === 'RED') {
-    if (cdt > 0 && currentStep <= 5) {
-      return { enter: true, reason: 'RED но уже в серии — продолжаем до шага 5' };
-    }
-    return { enter: false, reason: 'Аномалия — пауза' };
+
+  if (newMode !== currMode) {
+    newPrevMode = currMode;
+    newSpinsInCurrentMode = 1;
   }
-  return { enter: true, reason: 'Default' };
+
+  return {
+    mode: newMode,
+    newPrevMode,
+    newSpinsSinceDangerExit,
+    newSpinsInCurrentMode
+  };
 }
 
-function shouldExitRedPause(
-  newZone: Zone,
-  consecutiveWinsInPause: number,
-  cdt: number
-): boolean {
-  if (newZone === 'GREEN' || newZone === 'YELLOW') return true;
-  if (consecutiveWinsInPause >= 2) return true;
-  if (cdt < 5000) return true;
-  return false;
+function getEngineParams(mode: ServerMode, bankroll: number) {
+  const minBankroll = 500000;
+  const maxBankroll = 6500000;
+  
+  const clampedBankroll = Math.max(minBankroll, Math.min(bankroll, maxBankroll));
+  const ratio = (clampedBankroll - minBankroll) / (maxBankroll - minBankroll);
+  
+  const fullBaseBet = 1000 + ratio * (4000 - 1000);
+  const fullGrowthFactor = 2.2 + ratio * (2.5 - 2.2);
+  const fixedSniperMult = 1.5; // v10.0 proven value
+
+  if (mode === 'ZEBRA') {
+    return {
+      baseBet: fullBaseBet,
+      growthFactor: fullGrowthFactor,
+      sniperMult: fixedSniperMult
+    };
+  } else if (mode === 'TRANSITION') {
+    return {
+      baseBet: fullBaseBet * 0.67,
+      growthFactor: 2.2, // v10.0 proven value
+      sniperMult: fixedSniperMult
+    };
+  } else {
+    return {
+      baseBet: 1000,
+      growthFactor: 2.2, // minimum growth value
+      sniperMult: 1.0
+    };
+  }
 }
 
-function calculateGreenBet(
+function calculateBet(
   cdt: number,
-  currentStep: number,
-  currentBankroll: number
+  step: number,
+  mode: ServerMode,
+  baseBet: number,
+  growthFactor: number,
+  sniperMult: number,
+  bankroll: number
 ): number {
-  const tbb = Math.round((cdt + 1000) / 0.98);
-  const sniperMult = currentStep >= 2 ? 1.3 : 1.0;
-  const bet = Math.round(tbb * sniperMult);
-  return Math.max(1000, Math.min(bet, currentBankroll, 1000000));
-}
-
-function calculateYellowBet(
-  cdt: number,
-  currentStep: number,
-  currentBankroll: number
-): number {
-  const tbb = Math.round((cdt + 1000) / 0.98);
-  const stepMult = currentStep >= 3 ? 1.15 : 1.0;
-  const bet = Math.round(tbb * stepMult);
-  const cap = Math.max(10000, Math.round(currentBankroll * 0.02));
-  return Math.max(1000, Math.min(bet, cap, 1000000));
-}
-
-function calculateRedBet(): number {
-  return 1000;
-}
-
-function calculateBetForZone(
-  zone: Zone,
-  cdt: number,
-  currentStep: number,
-  currentBankroll: number
-): number {
-  switch (zone) {
-    case 'GREEN':
-      return calculateGreenBet(cdt, currentStep, currentBankroll);
-    case 'YELLOW':
-      return calculateYellowBet(cdt, currentStep, currentBankroll);
-    case 'RED':
-      const { enter } = shouldEnterProgression(zone, currentStep, cdt);
-      if (!enter) {
-        return calculateRedBet();
-      }
-      return calculateGreenBet(cdt, currentStep, currentBankroll);
+  if (cdt <= 0) return Math.round(baseBet);
+  
+  const tbb = Math.round((cdt + baseBet) / 0.98);
+  const geom = Math.round(baseBet * Math.pow(growthFactor, step - 1));
+  
+  let bet;
+  if (cdt > baseBet * 3 && step >= 2) {
+    const sniperBet = Math.round(tbb * sniperMult);
+    bet = Math.max(sniperBet, geom);
+  } else {
+    bet = Math.max(tbb, geom);
   }
+  
+  return Math.max(baseBet, Math.min(bet, 1000000, bankroll));
 }
 
 function getZebraMomentum(history: HistoryEntry[]): { followL1: boolean; confidence: number } {
@@ -501,20 +553,11 @@ export default function MatreshkaQuantum() {
   const [isEditingBet, setIsEditingBet] = useState(false);
   const [editBetValue, setEditBetValue] = useState('');
   const [sessionLogs, setSessionLogs] = useState<SessionLogEntry[]>([]);
-  const [currentZone, setCurrentZone] = useState<Zone>('GREEN');
-  const [isRedPause, setIsRedPause] = useState<boolean>(false);
-  const [consecutivePauseWins, setConsecutivePauseWins] = useState<number>(0);
+  const [currentMode, setCurrentMode] = useState<ServerMode>('ZEBRA');
+  const [previousMode, setPreviousMode] = useState<ServerMode>('ZEBRA');
+  const [spinsSinceDangerExit, setSpinsSinceDangerExit] = useState<number>(999);
+  const [spinsInCurrentMode, setSpinsInCurrentMode] = useState<number>(0);
   const [cdt, setCdt] = useState<number>(0);
-
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isRedPause) {
-      interval = setInterval(() => {
-        playHum();
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [isRedPause]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -532,10 +575,11 @@ export default function MatreshkaQuantum() {
         setHistory(parsed.history || []);
         setCurrentStep(parsed.currentStep || 1);
         setAttackStep(parsed.attackStep || 0);
-        setIsRedPause(parsed.isRedPause || false);
-        setConsecutivePauseWins(parsed.consecutivePauseWins || 0);
         setCdt(parsed.cdt || 0);
-        setCurrentZone(parsed.currentZone || 'GREEN');
+        setCurrentMode(parsed.currentMode || 'ZEBRA');
+        setPreviousMode(parsed.previousMode || 'ZEBRA');
+        setSpinsSinceDangerExit(parsed.spinsSinceDangerExit ?? 999);
+        setSpinsInCurrentMode(parsed.spinsInCurrentMode || 0);
         if (parsed.sessionStartTime) setSessionStartTime(parsed.sessionStartTime);
       } catch (e) {
         console.error("Failed to parse saved state", e);
@@ -552,10 +596,10 @@ export default function MatreshkaQuantum() {
   useEffect(() => {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_state', JSON.stringify({
-        initialBankroll, history, currentStep, attackStep, sessionStartTime, isRedPause, consecutivePauseWins, cdt, currentZone
+        initialBankroll, history, currentStep, attackStep, sessionStartTime, cdt, currentMode, previousMode, spinsSinceDangerExit, spinsInCurrentMode
       }));
     }
-  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, isRedPause, consecutivePauseWins, cdt, currentZone]);
+  }, [initialBankroll, history, currentStep, attackStep, sessionStartTime, isClient, cdt, currentMode, previousMode, spinsSinceDangerExit, spinsInCurrentMode]);
 
   const saveCurrentSession = () => {
     if (history.length === 0) return;
@@ -577,17 +621,27 @@ export default function MatreshkaQuantum() {
     localStorage.setItem('matreshka_sessions', JSON.stringify(updatedSessions));
   };
 
-  const calculateBaseUnit = (_bankroll: number) => {
-    return { SafeUnit: 1000, AggressiveUnit: 1000 };
-  };
-
   if (!isClient) return null;
 
   if (initialBankroll === 0) {
     const parsedBankroll = Number(setupVal) || 0;
-    const { SafeUnit, AggressiveUnit } = calculateBaseUnit(parsedBankroll);
+    const params = getEngineParams('ZEBRA', parsedBankroll);
     
-    const maxSteps = SafeUnit > 0 ? Math.floor(Math.log(parsedBankroll / SafeUnit) / Math.log(2.2)) : 0;
+    let stepsToLimit = 0;
+    let currentBet = params.baseBet;
+    while (currentBet < 1000000 && stepsToLimit < 50) {
+      stepsToLimit++;
+      currentBet = currentBet * params.growthFactor;
+    }
+    
+    let durabilitySteps = 0;
+    let currentLoss = 0;
+    let simBet = params.baseBet;
+    while (currentLoss < parsedBankroll * 0.5 && durabilitySteps < 50) {
+      durabilitySteps++;
+      currentLoss += simBet;
+      simBet = simBet * params.growthFactor;
+    }
 
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 font-sans text-white">
@@ -597,7 +651,7 @@ export default function MatreshkaQuantum() {
           className="max-w-md w-full bg-gray-900 p-8 rounded-2xl border border-gray-800 shadow-2xl"
         >
           <h1 className="text-2xl font-black text-white mb-2 text-center tracking-widest uppercase">Matreshka Quantum</h1>
-          <p className="text-gray-500 text-center text-sm mb-8">Quantum Strike Engine v10.0</p>
+          <p className="text-gray-500 text-center text-sm mb-8">Quantum Strike Engine v10.3</p>
           <div className="space-y-6">
             <div>
               <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Ваш Баланс (₽)</label>
@@ -614,22 +668,23 @@ export default function MatreshkaQuantum() {
               <div className="bg-gray-800/50 p-4 rounded-xl border border-gray-700">
                 <div className="flex items-start gap-3">
                   <Info className="text-emerald-400 shrink-0 mt-0.5" size={18} />
-                  <div>
-                    <p className="text-sm text-gray-300 mb-1">
-                      Базовая ставка: <span className="font-bold text-white">1,000 ₽</span>
+                  <div className="w-full">
+                    <p className="text-sm text-gray-300 mb-2 font-bold border-b border-gray-700 pb-2">
+                      При этом балансе:
                     </p>
-                    <p className="text-sm text-gray-300 mb-1">
-                      SNIPER: <span className="font-bold text-yellow-500">TBB × 1.3 (шаг ≥ 2)</span>
-                    </p>
-                    <div className="text-xs text-gray-400 mt-2 space-y-1">
-                      <p>Минимальный баланс: <span className="text-white">500,000 ₽</span> {parsedBankroll < 500000 ? '⛔' : '⚠'}</p>
-                      <p>Комфортный баланс: <span className="text-white">2,000,000 ₽</span> {parsedBankroll >= 2000000 ? '✓' : ''}</p>
-                      <p>Оптимальный баланс: <span className="text-white">5,000,000 ₽</span> {parsedBankroll >= 5000000 ? '✓✓' : ''}</p>
-                      <p className="mt-2 font-bold">
+                    <div className="text-xs text-gray-300 space-y-1.5">
+                      <p className="flex justify-between"><span>Режим по умолчанию:</span> <span className="font-bold text-emerald-400">ZEBRA</span></p>
+                      <p className="flex justify-between"><span>Базовая ставка:</span> <span className="font-bold text-white">{Math.round(params.baseBet).toLocaleString('ru-RU')} ₽</span></p>
+                      <p className="flex justify-between"><span>Множитель роста:</span> <span className="font-bold text-yellow-400">×{params.growthFactor.toFixed(2)}</span></p>
+                      <p className="flex justify-between"><span>Множитель Sniper:</span> <span className="font-bold text-yellow-400">×{params.sniperMult.toFixed(2)}</span></p>
+                      <p className="flex justify-between"><span>Шагов до лимита стола (1,000,000 ₽):</span> <span className="font-bold text-white">{stepsToLimit}</span></p>
+                      <p className="flex justify-between"><span>Прочность (спинов до потери 50% баланса):</span> <span className="font-bold text-white">{durabilitySteps}</span></p>
+                    </div>
+                    <div className="text-xs text-gray-400 mt-3 pt-2 border-t border-gray-700">
+                      <p>Минимальный рекомендуемый баланс: <span className="text-white">500,000 ₽</span></p>
+                      <p className="mt-1 font-bold">
                         {parsedBankroll < 500000 ? <span className="text-red-400">⛔ Ниже минимума — высокий риск</span> :
-                         parsedBankroll < 2000000 ? <span className="text-yellow-400">⚠ Рабочий минимум</span> :
-                         parsedBankroll < 5000000 ? <span className="text-emerald-400">✓ Комфортная игра</span> :
-                         <span className="text-emerald-400">✓✓ Оптимально</span>}
+                         <span className="text-emerald-400">✓ Допустимый баланс</span>}
                       </p>
                     </div>
                   </div>
@@ -683,8 +738,6 @@ export default function MatreshkaQuantum() {
   const profit = currentBankroll - initialBankroll;
   const sessionROI = initialBankroll > 0 ? ((profit / initialBankroll) * 100).toFixed(2) : "0.00";
 
-  const { SafeUnit, AggressiveUnit } = calculateBaseUnit(currentBankroll);
-
   const recentBets = history.filter(h => h.betAmount > 0).slice(-12);
   const recentWins = recentBets.filter(h => h.isWin).length;
   const winrate = recentBets.length > 0 ? recentWins / recentBets.length : 0;
@@ -715,22 +768,16 @@ export default function MatreshkaQuantum() {
     serverState = 'СЛИВ';
   }
 
-  let rawTbb = Math.round((cdt + 1000) / 0.98);
-  let maxStrikeBet = initialBankroll * 0.05;
-  let isSniperRecovery = rawTbb > maxStrikeBet;
+  const engineParams = getEngineParams(currentMode, currentBankroll);
+  
   let nextBet = 1000;
-  let isPhantomBet = false;
-
-  if (isRedPause) {
-      nextBet = calculateRedBet();
-      isPhantomBet = true;
-  } else if (manualBet !== null) {
+  if (manualBet !== null) {
       nextBet = manualBet;
   } else {
-      nextBet = calculateBetForZone(currentZone, cdt, currentStep, currentBankroll);
+      nextBet = calculateBet(cdt, currentStep, currentMode, engineParams.baseBet, engineParams.growthFactor, engineParams.sniperMult, currentBankroll);
   }
 
-  if (nextBet > currentBankroll && currentBankroll > 0 && !isPhantomBet) {
+  if (nextBet > currentBankroll && currentBankroll > 0) {
       nextBet = currentBankroll;
   }
 
@@ -740,7 +787,7 @@ export default function MatreshkaQuantum() {
 
   const isMaxLimit = nextBet >= 1000000;
 
-  const survivalSteps = Math.floor(Math.log(currentBankroll / 1000) / Math.log(2.2));
+  const survivalSteps = Math.floor(Math.log(currentBankroll / engineParams.baseBet) / Math.log(engineParams.growthFactor));
 
   const recommendation = manualColor !== null ? manualColor : baseRecommendation;
   const recommendationText = recommendation === 'RED' ? 'КРАСНОЕ' : recommendation === 'BLACK' ? 'ЧЕРНОЕ' : 'ЗЕРО';
@@ -869,8 +916,6 @@ export default function MatreshkaQuantum() {
     let nextStep = currentStep;
     let nextAttackStep = attackStep;
     let nextCdt = cdt;
-    let nextIsRedPause = isRedPause;
-    let nextConsecutivePauseWins = consecutivePauseWins;
 
     if (outcome === 'ZERO') {
       isWin = false;
@@ -885,26 +930,16 @@ export default function MatreshkaQuantum() {
       nextCdt = Math.max(0, nextCdt - netProfit);
       if (nextCdt < 10) nextCdt = 0;
       
-      if (nextIsRedPause) {
-        nextConsecutivePauseWins += 1;
-      } else {
-        if (nextCdt === 0) {
-          nextStep = 1;
-          nextAttackStep = 0;
-        }
+      if (nextCdt === 0) {
+        nextStep = 1;
+        nextAttackStep = 0;
       }
     } else {
       isWin = false;
       netProfit = -nextBet;
       nextCdt += nextBet;
 
-      if (nextIsRedPause) {
-        nextConsecutivePauseWins = 0;
-      } else {
-        if (currentStep < 4) {
-          nextStep = currentStep + 1;
-        }
-      }
+      nextStep = currentStep + 1;
     }
 
     const newEntry: HistoryEntry = {
@@ -917,40 +952,29 @@ export default function MatreshkaQuantum() {
     };
 
     const finalHistory = [...history, newEntry];
-    const newZone = detectZone(finalHistory);
-
-    if (nextIsRedPause) {
-      if (shouldExitRedPause(newZone, nextConsecutivePauseWins, nextCdt)) {
-        nextIsRedPause = false;
-        nextConsecutivePauseWins = 0;
-      }
-    } else {
-      if (!isWin && outcome !== 'ZERO' && currentStep >= 4 && newZone === 'RED') {
-        nextIsRedPause = true;
-        nextConsecutivePauseWins = 0;
-      }
-      if (newZone === 'RED' && nextCdt === 0) {
-        nextIsRedPause = true;
-        nextConsecutivePauseWins = 0;
-      }
-    }
+    const { mode: newMode, newPrevMode, newSpinsSinceDangerExit, newSpinsInCurrentMode } = detectModeWithHysteresis(
+      finalHistory,
+      previousMode,
+      currentMode,
+      spinsSinceDangerExit,
+      spinsInCurrentMode
+    );
 
     if (nextBet >= 1000000) {
       alert('ЛИМИТ СТОЛА');
       nextCdt = 0;
       nextStep = 1;
       nextAttackStep = 0;
-      nextIsRedPause = false;
-      nextConsecutivePauseWins = 0;
     }
 
     setHistory(finalHistory);
     setCurrentStep(nextStep);
     setAttackStep(nextAttackStep);
     setCdt(nextCdt);
-    setCurrentZone(newZone);
-    setIsRedPause(nextIsRedPause);
-    setConsecutivePauseWins(nextConsecutivePauseWins);
+    setCurrentMode(newMode);
+    setPreviousMode(newPrevMode);
+    setSpinsSinceDangerExit(newSpinsSinceDangerExit);
+    setSpinsInCurrentMode(newSpinsInCurrentMode);
 
     const nowMs = new Date().getTime();
     const timeSinceLast = sessionLogs.length > 0 ? nowMs - sessionLogs[sessionLogs.length - 1].timestamp : 0;
@@ -963,7 +987,8 @@ export default function MatreshkaQuantum() {
       current_step: currentStep,
       current_balance: currentBankroll,
       server_state_detected: serverPhase,
-      time_since_last_spin: timeSinceLast
+      time_since_last_spin: timeSinceLast,
+      current_mode: currentMode
     };
     setSessionLogs([...sessionLogs, newLogEntry]);
 
@@ -993,9 +1018,10 @@ export default function MatreshkaQuantum() {
     let step = 1;
     let aStep = 0;
     let cdtVal = 0;
-    let isRedPauseVal = false;
-    let consecutivePauseWinsVal = 0;
-    let currentZoneVal: Zone = 'GREEN';
+    let currentModeVal: ServerMode = 'ZEBRA';
+    let prevModeVal: ServerMode = 'ZEBRA';
+    let spinsSinceDangerExitVal = 999;
+    let spinsInCurrentModeVal = 0;
     
     for (let i = 0; i < newHistory.length; i++) {
         const entry = newHistory[i];
@@ -1010,60 +1036,42 @@ export default function MatreshkaQuantum() {
             cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.98));
             if (cdtVal < 10) cdtVal = 0;
             
-            if (isRedPauseVal) {
-                consecutivePauseWinsVal++;
-            } else {
-                if (cdtVal === 0) {
-                    step = 1;
-                    aStep = 0;
-                }
+            if (cdtVal === 0) {
+                step = 1;
+                aStep = 0;
             }
         } else {
             cdtVal += entry.betAmount;
-            if (isRedPauseVal) {
-                consecutivePauseWinsVal = 0;
-            } else {
-                if (step < 4) {
-                    step++;
-                }
-            }
+            step++;
         }
 
         const currentHistWithEntry = newHistory.slice(0, i + 1);
-        const newZone = detectZone(currentHistWithEntry);
-        currentZoneVal = newZone;
-
-        if (isRedPauseVal) {
-          if (shouldExitRedPause(newZone, consecutivePauseWinsVal, cdtVal)) {
-            isRedPauseVal = false;
-            consecutivePauseWinsVal = 0;
-          }
-        } else {
-          if (!isWin && entry.outcome !== 'ZERO' && step >= 4 && newZone === 'RED') {
-            isRedPauseVal = true;
-            consecutivePauseWinsVal = 0;
-          }
-          if (newZone === 'RED' && cdtVal === 0) {
-            isRedPauseVal = true;
-            consecutivePauseWinsVal = 0;
-          }
-        }
+        const hysteresisResult = detectModeWithHysteresis(
+          currentHistWithEntry,
+          prevModeVal,
+          currentModeVal,
+          spinsSinceDangerExitVal,
+          spinsInCurrentModeVal
+        );
+        currentModeVal = hysteresisResult.mode;
+        prevModeVal = hysteresisResult.newPrevMode;
+        spinsSinceDangerExitVal = hysteresisResult.newSpinsSinceDangerExit;
+        spinsInCurrentModeVal = hysteresisResult.newSpinsInCurrentMode;
 
         if (entry.betAmount > 1000000) {
             cdtVal = 0;
             step = 1;
             aStep = 0;
-            isRedPauseVal = false;
-            consecutivePauseWinsVal = 0;
         }
     }
     
     setCurrentStep(step);
     setAttackStep(aStep);
     setCdt(cdtVal);
-    setCurrentZone(currentZoneVal);
-    setIsRedPause(isRedPauseVal);
-    setConsecutivePauseWins(consecutivePauseWinsVal);
+    setCurrentMode(currentModeVal);
+    setPreviousMode(prevModeVal);
+    setSpinsSinceDangerExit(spinsSinceDangerExitVal);
+    setSpinsInCurrentMode(spinsInCurrentModeVal);
   };
 
   const handleTakeProfit = () => {
@@ -1184,47 +1192,46 @@ export default function MatreshkaQuantum() {
           initial={{ scale: 0.95, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           className={`relative overflow-hidden rounded-3xl p-8 border-2 flex flex-col items-center justify-center min-h-[240px] shadow-2xl
-              ${isRedPause ? 'bg-black border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] animate-pulse' :
-              'bg-black border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.2)]'}`}
+              ${currentMode === 'DANGER' ? 'bg-black border-red-500 shadow-[0_0_40px_rgba(239,68,68,0.4)] animate-pulse' :
+              currentMode === 'TRANSITION' ? 'bg-black border-yellow-500 shadow-[0_0_40px_rgba(234,179,8,0.2)]' :
+              'bg-black border-emerald-500 shadow-[0_0_40px_rgba(16,185,129,0.2)]'}`}
         >
           <div className="absolute top-4 right-5 text-right">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Состояние сервера</div>
-            <div className={`text-xs font-black tracking-widest uppercase ${isRedPause ? 'text-purple-400' : currentZone === 'GREEN' ? 'text-emerald-400' : currentZone === 'YELLOW' ? 'text-yellow-400' : 'text-red-400'}`}>
-              {isRedPause ? '⏸ ПАУЗА (Аномалия)' :
-               currentZone === 'GREEN' ? '🟢 ЗЕБРА' :
-               currentZone === 'YELLOW' ? '🟡 ПРЕД-АНОМАЛИЯ' :
-               '🔴 АНОМАЛИЯ'}
+            <div className={`text-xs font-black tracking-widest uppercase ${currentMode === 'DANGER' ? 'text-red-400' : currentMode === 'TRANSITION' ? 'text-yellow-400' : 'text-emerald-400'}`}>
+              {currentMode === 'DANGER' ? '🔴 DANGER MODE' :
+               currentMode === 'TRANSITION' ? '🟡 TRANSITION' :
+               '🟢 ZEBRA MODE'}
             </div>
+            {currentMode === 'TRANSITION' && spinsSinceDangerExit < 5 && (
+              <div className="text-[10px] text-yellow-500 font-mono mt-1">
+                COOLDOWN: {5 - spinsSinceDangerExit}
+              </div>
+            )}
           </div>
           <div className={`absolute top-4 left-5 font-black tracking-widest text-sm
             ${currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-yellow-500' : 'text-red-500'}`}>
-            {isRedPause ? `ШАГ: ${currentStep} (ПАУЗА)` : attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
+            {currentMode === 'DANGER' ? `ШАГ: ${currentStep} (DANGER)` : attackStep > 0 ? `АТАКА: ШАГ ${attackStep}` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
           </div>
 
-          {isRedPause ? (
-             isSniperRecovery ? (
-               <div className="text-red-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-                 🎯 SNIPER RECOVERY: ПОИСК ИДЕАЛЬНОГО ПАТТЕРНА
-               </div>
-             ) : (
-               <div className="text-purple-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-                 ⏸ RED PAUSE: ОЖИДАНИЕ ЗЕЛЕНОЙ ЗОНЫ
-               </div>
-             )
+          {currentMode === 'DANGER' ? (
+             <div className="text-red-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
+               🔴 DANGER: СНИЖЕНИЕ РИСКА
+             </div>
           ) : attackStep > 0 ? (
              <div className="text-yellow-500 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
                🔥 РЕЖИМ АТАКИ: РЕИНВЕСТ ПРОФИТА
              </div>
-          ) : cdt > 0 && currentStep >= 2 && !isRedPause ? (
+          ) : cdt > engineParams.baseBet * 3 && currentStep >= 2 ? (
              <div className="text-yellow-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4 animate-pulse">
-               🎯 SNIPER АКТИВЕН: ×1.3
+               🎯 SNIPER АКТИВЕН: ×{engineParams.sniperMult.toFixed(2)}
              </div>
           ) : (
              <div className="text-gray-400 text-xs font-bold tracking-widest uppercase mb-3 mt-4">СЛЕДУЮЩИЙ ХОД</div>
           )}
 
           <div className={`text-5xl sm:text-6xl font-black tracking-tighter mb-4
-              ${isRedPause ? 'text-purple-400' :
+              ${currentMode === 'DANGER' ? 'text-red-400' :
               attackStep > 0 ? 'text-yellow-500' :
               recommendation === 'RED' ? 'text-red-500' :
               recommendation === 'BLACK' ? 'text-white' :
@@ -1273,7 +1280,7 @@ export default function MatreshkaQuantum() {
               </div>
             ) : (
               <>
-                <span>СТАВКА: {Math.round(nextBet).toLocaleString('ru-RU')} ₽ {isRedPause && '(ПАУЗА)'}</span>
+                <span>СТАВКА: {Math.round(nextBet).toLocaleString('ru-RU')} ₽ {currentMode === 'DANGER' && '(DANGER)'}</span>
                 <button
                   onClick={() => {
                     setEditBetValue(Math.round(nextBet).toString());
@@ -1361,20 +1368,13 @@ export default function MatreshkaQuantum() {
           <Undo2 size={16} /> Отменить Последний Ввод
         </button>
 
-        {/* Zone Indicator */}
+        {/* Analytics Indicator */}
         <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 space-y-4">
-          <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Индикатор Зоны</div>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Текущая Зона</div>
-              <div className={`text-xs font-mono font-bold ${currentZone === 'GREEN' ? 'text-emerald-400' : currentZone === 'YELLOW' ? 'text-yellow-400' : 'text-red-500'}`}>
-                {currentZone === 'GREEN' ? '🟢 ЗЕБРА' : currentZone === 'YELLOW' ? '🟡 ПРЕД-АНОМАЛИЯ' : '🔴 АНОМАЛИЯ'}
-              </div>
-            </div>
-            <div>
-              <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1">Чередование (Alt)</div>
-              <div className="text-xs font-mono font-bold text-white">{altRateUI}%</div>
-            </div>
+          <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Аналитика</div>
+          <div className="text-sm font-mono text-gray-300 space-y-2">
+            <p>Текущий режим: {currentMode === 'ZEBRA' ? '🟢 ZEBRA' : currentMode === 'TRANSITION' ? '🟡 TRANSITION' : '🔴 DANGER'}</p>
+            <p>Base: {Math.round(engineParams.baseBet)} ₽ | Growth: ×{engineParams.growthFactor.toFixed(2)} | Sniper: ×{engineParams.sniperMult.toFixed(2)}</p>
+            <p>Серия: {currentStreakLengthHUD} | Чередование (6): {altRateUI}% | Зеро (10): {zeroCountLast10}</p>
           </div>
         </div>
 
@@ -1383,12 +1383,12 @@ export default function MatreshkaQuantum() {
           <div className="flex justify-between items-center">
             <div className="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Аналитика потока</div>
             <div className={`text-[10px] font-bold tracking-widest uppercase px-2 py-1 rounded bg-black border ${
-              isRedPause ? 'text-red-500 border-red-500/30' :
+              currentMode === 'DANGER' ? 'text-red-500 border-red-500/30' :
               confidenceValue > 60 ? 'text-emerald-400 border-emerald-500/30' :
               confidenceValue >= 50 ? 'text-yellow-500 border-yellow-500/30' :
               'text-red-500 border-red-500/30'
             }`}>
-              Уверенность: {isRedPause ? 'ПАУЗА' : `${confidenceValue}%`}
+              Уверенность: {currentMode === 'DANGER' ? 'DANGER' : `${confidenceValue}%`}
             </div>
           </div>
           
@@ -1548,8 +1548,6 @@ export default function MatreshkaQuantum() {
                   setCurrentStep(1);
                   setAttackStep(0);
                   setSessionLogs([]);
-                  setIsRedPause(false);
-                  setConsecutivePauseWins(0);
                   setCdt(0);
                   localStorage.removeItem('matreshka_state');
                 }}
@@ -1605,8 +1603,6 @@ export default function MatreshkaQuantum() {
                     setAttackStep(0);
                     setShowSummary(false);
                     setSessionLogs([]);
-                    setIsRedPause(false);
-                    setConsecutivePauseWins(0);
                     setCdt(0);
                     localStorage.removeItem('matreshka_state');
                   }}
