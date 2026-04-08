@@ -326,7 +326,9 @@ function detectModeWithHysteresis(
   spinsInCurrentMode: number
 ): { mode: ServerMode, newPrevMode: ServerMode, newSpinsSinceDangerExit: number, newSpinsInCurrentMode: number } {
   const rawMode = detectMode(history);
-  let newMode = rawMode;
+  const zeroCount10 = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
+  const effectiveRawMode = (zeroCount10 >= 3 && rawMode === 'ZEBRA') ? 'TRANSITION' : rawMode;
+  let newMode = effectiveRawMode;
   
   let newSpinsSinceDangerExit = spinsSinceDangerExit + 1;
   let newSpinsInCurrentMode = spinsInCurrentMode + 1;
@@ -363,13 +365,13 @@ function detectModeWithHysteresis(
 function getEngineParams(mode: ServerMode, bankroll: number) {
   const minBankroll = 500000;
   const maxBankroll = 6500000;
-  
+
   const clampedBankroll = Math.max(minBankroll, Math.min(bankroll, maxBankroll));
   const ratio = (clampedBankroll - minBankroll) / (maxBankroll - minBankroll);
-  
+
   const fullBaseBet = 1000 + ratio * (4000 - 1000);
   const fullGrowthFactor = 2.2 + ratio * (2.5 - 2.2);
-  const fixedSniperMult = 1.5; // v10.0 proven value
+  const fixedSniperMult = 1.6;
 
   if (mode === 'ZEBRA') {
     return {
@@ -380,13 +382,14 @@ function getEngineParams(mode: ServerMode, bankroll: number) {
   } else if (mode === 'TRANSITION') {
     return {
       baseBet: Math.max(1000, fullBaseBet * 0.67),
-      growthFactor: 2.2, // v10.0 proven value
+      growthFactor: 2.1,
       sniperMult: fixedSniperMult
     };
   } else {
+    const dangerBaseBet = Math.round(1500 + ratio * (2500 - 1500));
     return {
-      baseBet: 1000,
-      growthFactor: 2.2, // minimum growth value
+      baseBet: dangerBaseBet,
+      growthFactor: 2.0,
       sniperMult: 1.0
     };
   }
@@ -407,7 +410,7 @@ function calculateBet(
   const geom = Math.round(baseBet * Math.pow(growthFactor, step - 1));
   
   let bet;
-  if (cdt > baseBet * 3 && step >= 2) {
+  if (cdt > baseBet * 2 && step >= 2) {
     const sniperBet = Math.round(tbb * sniperMult);
     bet = Math.max(sniperBet, geom);
   } else {
@@ -651,7 +654,7 @@ export default function MatreshkaQuantum() {
           className="max-w-md w-full bg-gray-900 p-8 rounded-2xl border border-gray-800 shadow-2xl"
         >
           <h1 className="text-2xl font-black text-white mb-2 text-center tracking-widest uppercase">Matreshka Quantum</h1>
-          <p className="text-gray-500 text-center text-sm mb-8">Quantum Strike Engine v10.3</p>
+          <p className="text-gray-500 text-center text-sm mb-8">Quantum Strike Engine v10.4</p>
           <div className="space-y-6">
             <div>
               <label className="block text-gray-400 text-xs font-bold uppercase tracking-widest mb-2">Ваш Баланс (₽)</label>
