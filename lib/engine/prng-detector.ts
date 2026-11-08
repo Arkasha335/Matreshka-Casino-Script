@@ -148,46 +148,51 @@ export class PrngDetector {
   /**
    * Server Mode Detection: ZEBRA, TRANSITION, DANGER.
    */
-  /**
-   * Fast & Responsive Server Mode Detection:
-   * - ZEBRA: High alternation rate (>= 60%), streaks <= 2, no recent Zero.
-   * - TRANSITION ("Жёлтенький"): Streaks of 3-4, moderate alternation, or 1 recent Zero.
-   * - DANGER: Aggressive mono-streaks (>= 5), cluster of ZEROs (>= 2 in 10), or streak >= 4 with low alternation.
-   */
   public static detectMode(history: HistoryEntry[]): ServerMode {
     const nonZero = history.filter(h => h.outcome !== 'ZERO');
     if (nonZero.length < 3) return 'ZEBRA';
 
     const currentStreak = this.calcCurrentStreak(nonZero);
     const fastAltRate = this.calcAlternation(nonZero.slice(-6));
-    const streak3plusCount = this.countStreaksGTE(nonZero.slice(-12), 3);
-    const zeroCount10 = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
-    const zeroCount5 = history.slice(-5).filter(h => h.outcome === 'ZERO').length;
+    const slowAltRate = this.calcAlternation(nonZero.slice(-15));
+    const streak3plusCount = this.countStreaksGTE(nonZero.slice(-15), 3);
+    const zeroCount = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
 
-    // 1. DANGER Triggers (Immediate Reaction)
-    if (currentStreak >= 5) return 'DANGER';
-    if (zeroCount10 >= 2) return 'DANGER';
-    if (currentStreak >= 4 && fastAltRate <= 0.25) return 'DANGER';
+    let score = 0;
 
-    // 2. TRANSITION Triggers ("Жёлтенький")
-    if (currentStreak >= 3) return 'TRANSITION';
-    if (zeroCount5 >= 1) return 'TRANSITION';
-    if (fastAltRate < 0.60) return 'TRANSITION';
-    if (streak3plusCount >= 2) return 'TRANSITION';
+    // Current streak
+    if (currentStreak >= 7) score -= 8;
+    else if (currentStreak === 6) score -= 6;
+    else if (currentStreak === 5) score -= 4;
+    else if (currentStreak === 4) score -= 1;
+    else if (currentStreak === 3) score += 0;
+    else if (currentStreak <= 2) score += 2;
 
-    // 3. ZEBRA Triggers
-    if (currentStreak <= 2 && fastAltRate >= 0.60 && zeroCount5 === 0) {
-      return 'ZEBRA';
-    }
+    // Fast alternation rate
+    if (fastAltRate >= 0.80) score += 3;
+    else if (fastAltRate >= 0.60) score += 1;
+    else if (fastAltRate < 0.30) score -= 2;
 
+    // Slow alternation rate
+    if (slowAltRate >= 0.70) score += 1;
+    else if (slowAltRate < 0.40) score -= 1;
+
+    // Streak density
+    if (streak3plusCount >= 3) score -= 2;
+    else if (streak3plusCount === 2) score -= 1;
+    else if (streak3plusCount === 0) score += 1;
+
+    // Zero count
+    if (zeroCount >= 3) score -= 3;
+    else if (zeroCount === 2) score -= 1;
+
+    if (score >= 2) return 'ZEBRA';
+    if (score <= -2) return 'DANGER';
     return 'TRANSITION';
   }
 
   /**
-   * Fast-adapting hysteresis filter:
-   * - Instantly pivots into DANGER upon aggressive conditions.
-   * - Smoothly and rapidly downshifts to TRANSITION as soon as a streak breaks.
-   * - Re-enters ZEBRA without lingering in lockdown for 5-8 spins.
+   * Hysteresis filter to stabilize server mode switching and prevent whipsaws.
    */
   public static detectModeWithHysteresis(
     history: HistoryEntry[],
@@ -197,22 +202,24 @@ export class PrngDetector {
     spinsInCurrentMode: number
   ): { mode: ServerMode; newPrevMode: ServerMode; newSpinsSinceDangerExit: number; newSpinsInCurrentMode: number } {
     const rawMode = this.detectMode(history);
-    let newMode = rawMode;
+    const zeroCount10 = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
+    const effectiveRawMode = (zeroCount10 >= 3 && rawMode === 'ZEBRA') ? 'TRANSITION' : rawMode;
+    let newMode = effectiveRawMode;
 
     let newSpinsSinceDangerExit = spinsSinceDangerExit + 1;
     let newSpinsInCurrentMode = spinsInCurrentMode + 1;
     let newPrevMode = prevMode;
 
-    // Responsive downshift:
-    // If we were in DANGER, but rawMode indicates the streak broke or calm returned:
-    // Immediately drop to TRANSITION to test the waters (no 3-spin forced lock).
-    if (currMode === 'DANGER' && rawMode !== 'DANGER') {
-      newMode = 'TRANSITION';
-      newSpinsSinceDangerExit = 0;
+    // Rule 1: DANGER minimum hold (3 spins)
+    if (currMode === 'DANGER' && spinsInCurrentMode < 3) {
+      newMode = 'DANGER';
     }
 
-    // From TRANSITION to ZEBRA: requires 1 confirming clean spin (not 5!)
-    if (currMode === 'TRANSITION' && rawMode === 'ZEBRA' && spinsSinceDangerExit < 1) {
+    // Rule 2: Post-DANGER cooldown (5 spins in TRANSITION)
+    if (currMode === 'DANGER' && newMode !== 'DANGER' && spinsInCurrentMode >= 3) {
+      newMode = 'TRANSITION';
+      newSpinsSinceDangerExit = 0;
+    } else if (newSpinsSinceDangerExit < 5 && newMode === 'ZEBRA') {
       newMode = 'TRANSITION';
     }
 
@@ -298,13 +305,12 @@ export class PrngDetector {
 
     const currentMaxStreak = matrix.currentActiveColor === 'RED' ? matrix.maxStreakRed : matrix.maxStreakBlack;
 
-    // True Ceiling Bounce only applies to long mature runs (>= 5)
-    if (matrix.currentActiveColor && matrix.currentActiveStreak >= Math.max(5, currentMaxStreak) && currentMaxStreak > 0) {
+    if (matrix.currentActiveColor && matrix.currentActiveStreak >= currentMaxStreak && currentMaxStreak > 0) {
       recommendation = matrix.currentActiveColor === 'RED' ? 'BLACK' : 'RED';
       confidence = 90;
       state = 'ОТСКОК ОТ ПОТОЛКА';
     } else if (L1 === L2) {
-      if (L1 === matrix.alpha && currentMaxStreak >= 3) {
+      if (L1 === matrix.alpha && currentMaxStreak > 2) {
         recommendation = L1;
         confidence = 75;
         state = 'АЛЬФА-ТРЕНД';
