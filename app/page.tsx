@@ -988,25 +988,37 @@ export default function MatreshkaQuantum() {
           </div>
         </div>
 
-        {/* Risk Meter (Durability to 1M and 50% Bankroll) */}
+        {/* Risk Meter (Dynamic Durability to 1M Limit) */}
         <div className="w-full bg-gray-900/60 rounded-2xl p-4 border border-gray-800">
           <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 mb-2.5 tracking-widest uppercase font-mono">
-            <span>Запас прочности</span>
-            <span className="text-emerald-400">{engineParams.stepsToLimit} шагов до лимита стола</span>
+            <span>Запас прочности: {currentStep} / {engineParams.stepsToLimit} шагов</span>
+            <span className={currentStep >= engineParams.stepsToLimit ? 'text-amber-400 font-black animate-pulse' : 'text-emerald-400'}>
+              {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до лимита 1М
+            </span>
           </div>
           <div className="flex gap-1.5 h-3">
-            {[1, 2, 3, 4, 5, 6, 7, 8].map(i => {
+            {Array.from({ length: Math.max(8, engineParams.stepsToLimit) }, (_, idx) => idx + 1).map(i => {
               let bgColor = 'bg-gray-800';
               if (i <= currentStep) {
-                if (i <= 3) bgColor = 'bg-emerald-500';
-                else if (i <= 5) bgColor = 'bg-yellow-500';
-                else bgColor = 'bg-red-500 animate-pulse';
+                if (i <= Math.floor(engineParams.stepsToLimit * 0.4)) bgColor = 'bg-emerald-500';
+                else if (i <= Math.floor(engineParams.stepsToLimit * 0.7)) bgColor = 'bg-yellow-500';
+                else if (i < engineParams.stepsToLimit) bgColor = 'bg-red-500';
+                else bgColor = 'bg-amber-400 animate-pulse';
               }
               return (
-                <div key={i} className={`flex-1 rounded-sm ${bgColor} transition-colors duration-300`} />
+                <div
+                  key={i}
+                  className={`flex-1 rounded-sm ${bgColor} transition-colors duration-300`}
+                  title={`Шаг ${i} из ${engineParams.stepsToLimit}`}
+                />
               );
             })}
           </div>
+          {currentStep >= engineParams.stepsToLimit && (
+            <div className="mt-2.5 bg-amber-500/20 border border-amber-500/50 rounded-xl p-2 text-center text-amber-300 text-[10px] font-black uppercase tracking-wider">
+              ⚡ Терминальный шаг: ставка упирается в потолок стола (1 000 000 ₽) для максимального съёма профита
+            </div>
+          )}
         </div>
 
         {/* History Rail */}
@@ -1049,7 +1061,7 @@ export default function MatreshkaQuantum() {
                   <div className="font-bold text-emerald-400 text-xs flex items-center gap-1.5 mb-1">
                     <Sparkles size={14} /> APEX OPT (Математический Идеал)
                   </div>
-                  <div className="text-[11px] text-gray-300">Гарантия 10 шагов до 1М лимита стола. 100% возврат баланса.</div>
+                  <div className="text-[11px] text-gray-300">Гарантия 10 шагов до 1М лимита стола (B₀ до 1 600 ₽). Минимальный X + терминальный съём. 14/14 побед в бенчмарках.</div>
                 </button>
 
                 <button
@@ -1061,7 +1073,7 @@ export default function MatreshkaQuantum() {
                   <div className="font-bold text-amber-400 text-xs flex items-center gap-1.5 mb-1">
                     <Zap size={14} /> TURBO HARVEST (Максимальный разгон)
                   </div>
-                  <div className="text-[11px] text-gray-300">Повышенная базовая ставка и снайпер на шагах 2-3 для агрессивного заработка.</div>
+                  <div className="text-[11px] text-gray-300">Гарантия 9 шагов до лимита 1М (B₀ до 3 300 ₽). Чистый минимальный TBB без риска геометрического перелёта.</div>
                 </button>
 
                 <button
@@ -1073,7 +1085,7 @@ export default function MatreshkaQuantum() {
                   <div className="font-bold text-blue-400 text-xs flex items-center gap-1.5 mb-1">
                     <Shield size={14} /> SHIELD ULTRA (Ультра-консервативный)
                   </div>
-                  <div className="text-[11px] text-gray-300">Минимальные базовые ставки. 11 шагов запаса прочности до лимита.</div>
+                  <div className="text-[11px] text-gray-300">Максимальная броня: 11 шагов запаса до лимита стола (B₀ до 800 ₽). Защита от экстремальных аномалий сервера.</div>
                 </button>
               </div>
             </motion.div>
