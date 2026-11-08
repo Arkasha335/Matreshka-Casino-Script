@@ -1,201 +1,352 @@
-import { Outcome, PredictionResult, SpinRecord } from './types';
+import { ApexMatrix, HistoryEntry, Outcome, PredictionResult, ServerMode, SkewStats } from './types';
 
 export class PrngDetector {
   /**
-   * Calculate alternation rate (how frequently colors switch) over non-zero spins.
+   * Calculate alternation rate over an array of history entries.
    */
-  public static calcAlternationRate(records: SpinRecord[], windowSize: number = 15): number {
-    const nonZero = records.filter(r => r.outcome !== 'ZERO').slice(-windowSize);
-    if (nonZero.length < 2) return 0.5;
+  public static calcAlternation(arr: HistoryEntry[]): number {
+    if (arr.length < 3) return 0.5;
     let transitions = 0;
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i].outcome !== arr[i - 1].outcome) transitions++;
+    }
+    return transitions / (arr.length - 1);
+  }
+
+  /**
+   * Current active streak of non-zero entries.
+   */
+  public static calcCurrentStreak(nonZero: HistoryEntry[]): number {
+    if (nonZero.length === 0) return 0;
+    let streak = 1;
+    const lastColor = nonZero[nonZero.length - 1].outcome;
+    for (let i = nonZero.length - 2; i >= 0; i--) {
+      if (nonZero[i].outcome === lastColor) streak++;
+      else break;
+    }
+    return streak;
+  }
+
+  /**
+   * Count streaks >= minLen in history.
+   */
+  public static countStreaksGTE(nonZero: HistoryEntry[], minLen: number): number {
+    if (nonZero.length === 0) return 0;
+    let count = 0;
+    let currentStreak = 1;
+    let lastColor = nonZero[0].outcome;
+
     for (let i = 1; i < nonZero.length; i++) {
-      if (nonZero[i].outcome !== nonZero[i - 1].outcome) {
-        transitions++;
-      }
-    }
-    return transitions / (nonZero.length - 1);
-  }
-
-  /**
-   * Calculate current active streak of the latest color.
-   */
-  public static calcCurrentStreak(records: SpinRecord[]): { color: Outcome | null; length: number } {
-    if (records.length === 0) return { color: null, length: 0 };
-    const lastColor = records[records.length - 1].outcome;
-    if (lastColor === 'ZERO') return { color: 'ZERO', length: 1 };
-    
-    let length = 0;
-    for (let i = records.length - 1; i >= 0; i--) {
-      if (records[i].outcome === lastColor) {
-        length++;
+      if (nonZero[i].outcome === lastColor) {
+        currentStreak++;
       } else {
-        break;
+        if (currentStreak >= minLen) count++;
+        currentStreak = 1;
+        lastColor = nonZero[i].outcome;
       }
     }
-    return { color: lastColor, length };
+    if (currentStreak >= minLen) count++;
+    return count;
   }
 
   /**
-   * CUSUM (Cumulative Sum Control Chart) to detect statistical regime shifts.
-   * Compares recent win/loss stream against expected negative drift.
+   * Calculate Apex Matrix for Alpha/Omega, streak maximums and active streaks.
    */
-  public static calcCusumState(records: SpinRecord[], windowSize: number = 30): {
-    state: 'BULLISH' | 'NEUTRAL' | 'BEARISH';
-    scorePositive: number;
-    scoreNegative: number;
-  } {
-    const recent = records.slice(-windowSize);
-    if (recent.length < 5) {
-      return { state: 'NEUTRAL', scorePositive: 0, scoreNegative: 0 };
+  public static getApexMatrix(history: HistoryEntry[], window: number = 20): ApexMatrix {
+    const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
+
+    let redCount = 0;
+    let blackCount = 0;
+    let maxStreakRed = 0;
+    let maxStreakBlack = 0;
+
+    let currentStreak = 0;
+    let currentColor: Outcome | null = null;
+
+    for (const h of nonZero) {
+      if (h.outcome === 'RED') redCount++;
+      if (h.outcome === 'BLACK') blackCount++;
+
+      if (h.outcome === currentColor) {
+        currentStreak++;
+      } else {
+        currentColor = h.outcome;
+        currentStreak = 1;
+      }
+
+      if (currentColor === 'RED' && currentStreak > maxStreakRed) maxStreakRed = currentStreak;
+      if (currentColor === 'BLACK' && currentStreak > maxStreakBlack) maxStreakBlack = currentStreak;
     }
 
-    const mu0 = -0.04; // Baseline expected return under -4.82% house edge
-    const k = 0.20; // Slack parameter
-    let sPos = 0;
-    let sNeg = 0;
+    let alpha: Outcome | 'NEUTRAL' = 'NEUTRAL';
+    let omega: Outcome | 'NEUTRAL' = 'NEUTRAL';
 
-    for (const r of recent) {
-      // Win = +1.0, Loss/Zero = -1.0
-      const x = r.isWin ? 1.0 : -1.0;
-      sPos = Math.max(0, sPos + (x - mu0 - k));
-      sNeg = Math.max(0, sNeg - (x - mu0 + k));
+    if (nonZero.length > 0) {
+      if (redCount / nonZero.length > 0.55) {
+        alpha = 'RED';
+        omega = 'BLACK';
+      } else if (blackCount / nonZero.length > 0.55) {
+        alpha = 'BLACK';
+        omega = 'RED';
+      }
     }
 
-    const threshold = 2.5;
-    if (sPos >= threshold && sPos > sNeg) {
-      return { state: 'BULLISH', scorePositive: sPos, scoreNegative: sNeg };
-    } else if (sNeg >= threshold && sNeg > sPos) {
-      return { state: 'BEARISH', scorePositive: sPos, scoreNegative: sNeg };
+    let currentActiveStreak = 0;
+    let currentActiveColor: Outcome | null = null;
+    if (nonZero.length > 0) {
+      currentActiveColor = nonZero[nonZero.length - 1].outcome;
+      for (let i = nonZero.length - 1; i >= 0; i--) {
+        if (nonZero[i].outcome === currentActiveColor) {
+          currentActiveStreak++;
+        } else {
+          break;
+        }
+      }
     }
-    return { state: 'NEUTRAL', scorePositive: sPos, scoreNegative: sNeg };
-  }
 
-  /**
-   * Generate next color prediction using an ensemble of Micro-Pattern, Alternation, and Mean-Reversion filters.
-   */
-  public static predictNextOutcome(records: SpinRecord[]): PredictionResult {
-    const defaultPrediction: PredictionResult = {
-      recommendation: 'RED',
-      confidence: 50,
-      patternName: 'ИНИЦИАЛИЗАЦИЯ',
-      rationale: 'Недостаточно данных для квантового анализа',
-      alternationRate: 0.5,
-      dominantColor: 'BALANCED',
-      cusumState: 'NEUTRAL',
+    return {
+      alpha,
+      omega,
+      maxStreakRed,
+      maxStreakBlack,
+      currentActiveColor,
+      currentActiveStreak,
     };
+  }
 
-    if (records.length === 0) return defaultPrediction;
+  /**
+   * Global color skew across entire session.
+   */
+  public static getGlobalSkew(history: HistoryEntry[]): SkewStats {
+    const nonZero = history.filter(h => h.outcome !== 'ZERO');
+    if (nonZero.length === 0) return { red: 50, black: 50, dominant: null };
+    const redCount = nonZero.filter(h => h.outcome === 'RED').length;
+    const redPct = (redCount / nonZero.length) * 100;
+    const blackPct = 100 - redPct;
+    let dominant: Outcome | null = null;
+    if (Math.abs(redPct - blackPct) > 10) {
+      dominant = redPct > blackPct ? 'RED' : 'BLACK';
+    }
+    return { red: redPct, black: blackPct, dominant };
+  }
 
-    const nonZero = records.filter(r => r.outcome !== 'ZERO');
-    const altRate = this.calcAlternationRate(records, 15);
-    const { color: streakColor, length: streakLen } = this.calcCurrentStreak(records);
-    const cusum = this.calcCusumState(records, 25);
+  /**
+   * Local color skew over rolling window.
+   */
+  public static getLocalSkew(history: HistoryEntry[], window: number = 15): SkewStats {
+    const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
+    if (nonZero.length === 0) return { red: 50, black: 50, dominant: null };
+    const redCount = nonZero.filter(h => h.outcome === 'RED').length;
+    const redPct = (redCount / nonZero.length) * 100;
+    const blackPct = 100 - redPct;
+    let dominant: Outcome | null = null;
+    if (redCount >= 10) dominant = 'RED';
+    else if (nonZero.length - redCount >= 10) dominant = 'BLACK';
+    return { red: redPct, black: blackPct, dominant };
+  }
 
-    // Color distribution over last 20
-    const last20 = nonZero.slice(-20);
-    const redCount = last20.filter(r => r.outcome === 'RED').length;
-    const blackCount = last20.length - redCount;
-    let dominant: Outcome | 'BALANCED' = 'BALANCED';
-    if (last20.length >= 10) {
-      if (redCount / last20.length >= 0.65) dominant = 'RED';
-      else if (blackCount / last20.length >= 0.65) dominant = 'BLACK';
+  /**
+   * Server Mode Detection: ZEBRA, TRANSITION, DANGER.
+   */
+  public static detectMode(history: HistoryEntry[]): ServerMode {
+    const nonZero = history.filter(h => h.outcome !== 'ZERO');
+    if (nonZero.length < 3) return 'ZEBRA';
+
+    const currentStreak = this.calcCurrentStreak(nonZero);
+    const fastAltRate = this.calcAlternation(nonZero.slice(-6));
+    const slowAltRate = this.calcAlternation(nonZero.slice(-15));
+    const streak3plusCount = this.countStreaksGTE(nonZero.slice(-15), 3);
+    const zeroCount = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
+
+    let score = 0;
+
+    // Current streak
+    if (currentStreak >= 7) score -= 8;
+    else if (currentStreak === 6) score -= 6;
+    else if (currentStreak === 5) score -= 4;
+    else if (currentStreak === 4) score -= 1;
+    else if (currentStreak === 3) score += 0;
+    else if (currentStreak <= 2) score += 2;
+
+    // Fast alternation rate
+    if (fastAltRate >= 0.80) score += 3;
+    else if (fastAltRate >= 0.60) score += 1;
+    else if (fastAltRate < 0.30) score -= 2;
+
+    // Slow alternation rate
+    if (slowAltRate >= 0.70) score += 1;
+    else if (slowAltRate < 0.40) score -= 1;
+
+    // Streak density
+    if (streak3plusCount >= 3) score -= 2;
+    else if (streak3plusCount === 2) score -= 1;
+    else if (streak3plusCount === 0) score += 1;
+
+    // Zero count
+    if (zeroCount >= 3) score -= 3;
+    else if (zeroCount === 2) score -= 1;
+
+    if (score >= 2) return 'ZEBRA';
+    if (score <= -2) return 'DANGER';
+    return 'TRANSITION';
+  }
+
+  /**
+   * Hysteresis filter to stabilize server mode switching and prevent whipsaws.
+   */
+  public static detectModeWithHysteresis(
+    history: HistoryEntry[],
+    prevMode: ServerMode,
+    currMode: ServerMode,
+    spinsSinceDangerExit: number,
+    spinsInCurrentMode: number
+  ): { mode: ServerMode; newPrevMode: ServerMode; newSpinsSinceDangerExit: number; newSpinsInCurrentMode: number } {
+    const rawMode = this.detectMode(history);
+    const zeroCount10 = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
+    const effectiveRawMode = (zeroCount10 >= 3 && rawMode === 'ZEBRA') ? 'TRANSITION' : rawMode;
+    let newMode = effectiveRawMode;
+
+    let newSpinsSinceDangerExit = spinsSinceDangerExit + 1;
+    let newSpinsInCurrentMode = spinsInCurrentMode + 1;
+    let newPrevMode = prevMode;
+
+    // Rule 1: DANGER minimum hold (3 spins)
+    if (currMode === 'DANGER' && spinsInCurrentMode < 3) {
+      newMode = 'DANGER';
     }
 
-    if (nonZero.length < 3) {
-      const lastColor = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
-      return {
-        recommendation: lastColor,
-        confidence: 52,
-        patternName: 'БАЗОВЫЙ ИМПУЛЬС',
-        rationale: 'Следование за последним цветом на старте сессии',
-        alternationRate: altRate,
-        dominantColor: dominant,
-        cusumState: cusum.state,
-      };
+    // Rule 2: Post-DANGER cooldown (5 spins in TRANSITION)
+    if (currMode === 'DANGER' && newMode !== 'DANGER' && spinsInCurrentMode >= 3) {
+      newMode = 'TRANSITION';
+      newSpinsSinceDangerExit = 0;
+    } else if (newSpinsSinceDangerExit < 5 && newMode === 'ZEBRA') {
+      newMode = 'TRANSITION';
+    }
+
+    if (newMode !== currMode) {
+      newPrevMode = currMode;
+      newSpinsInCurrentMode = 1;
+    }
+
+    return {
+      mode: newMode,
+      newPrevMode,
+      newSpinsSinceDangerExit,
+      newSpinsInCurrentMode,
+    };
+  }
+
+  /**
+   * Zebra momentum detector (Follow vs Break).
+   */
+  public static getZebraMomentum(history: HistoryEntry[]): { followL1: boolean; confidence: number } {
+    const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-6);
+    if (nonZero.length < 4) return { followL1: true, confidence: 55 };
+
+    let alternations = 0;
+    for (let i = 1; i < nonZero.length; i++) {
+      if (nonZero[i].outcome !== nonZero[i - 1].outcome) alternations++;
+    }
+    const altRate = alternations / (nonZero.length - 1);
+
+    if (altRate >= 0.80) {
+      return { followL1: false, confidence: 65 };
+    } else if (altRate >= 0.60) {
+      return { followL1: true, confidence: 55 };
+    } else {
+      return { followL1: true, confidence: 58 };
+    }
+  }
+
+  /**
+   * Micro-Pattern Detector (MPD) + Apex Matrix color recommender.
+   */
+  public static getRecommendationAndConfidence(history: HistoryEntry[]): PredictionResult {
+    if (history.length === 0) return { recommendation: 'RED', confidence: 50, state: 'АНАЛИЗ' };
+
+    const matrix = this.getApexMatrix(history);
+    const nonZero = history.filter(h => h.outcome !== 'ZERO');
+
+    let recommendation: Outcome = 'RED';
+    let confidence = 50;
+    let state = 'АНАЛИЗ';
+
+    // === MICRO-PATTERN DETECTOR (MPD) ===
+    if (nonZero.length >= 4) {
+      const L1 = nonZero[nonZero.length - 1].outcome;
+      const L2 = nonZero[nonZero.length - 2].outcome;
+      const L3 = nonZero[nonZero.length - 3].outcome;
+      const L4 = nonZero[nonZero.length - 4].outcome;
+
+      // Echo Alternation A-B-A-B
+      if (L1 === L3 && L2 === L4 && L1 !== L2) {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+        confidence = 82;
+        state = 'ЭХО-ПАТТЕРН';
+        return { recommendation, confidence, state };
+      }
+
+      // 3-Streak Break Wave (A-A-A after B)
+      if (L1 === L2 && L2 === L3 && L4 !== L1) {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+        confidence = 78;
+        state = 'ВОЛНА (СЛОМ СЕРИИ)';
+        return { recommendation, confidence, state };
+      }
+    }
+
+    if (nonZero.length < 2) {
+      recommendation = nonZero.length > 0 ? nonZero[nonZero.length - 1].outcome : 'RED';
+      return { recommendation, confidence, state };
     }
 
     const L1 = nonZero[nonZero.length - 1].outcome;
     const L2 = nonZero[nonZero.length - 2].outcome;
-    const L3 = nonZero[nonZero.length - 3].outcome;
-    const oppL1: Outcome = L1 === 'RED' ? 'BLACK' : 'RED';
 
-    // 1. High-Alternation Zebra Wave (Transitions >= 70%)
-    if (altRate >= 0.70) {
-      return {
-        recommendation: oppL1,
-        confidence: Math.round(55 + altRate * 20),
-        patternName: 'ЗЕБРА-ВОЛНА (РЕЖИМ ЧЕРЕДОВАНИЯ)',
-        rationale: `Частота смены цветов ${(altRate * 100).toFixed(0)}%. Играем на продолжение чередования.`,
-        alternationRate: altRate,
-        dominantColor: dominant,
-        cusumState: cusum.state,
-      };
-    }
+    const currentMaxStreak = matrix.currentActiveColor === 'RED' ? matrix.maxStreakRed : matrix.maxStreakBlack;
 
-    // 2. Micro-Pattern: 2-2 Block (Echo Pattern: A-A-B-B or A-B-A-B)
-    if (nonZero.length >= 4) {
-      const L4 = nonZero[nonZero.length - 4].outcome;
-      // Echo A-B-A-B
-      if (L1 === L3 && L2 === L4 && L1 !== L2) {
-        return {
-          recommendation: oppL1,
-          confidence: 68,
-          patternName: 'ГАРМОНИЧЕСКИЙ ЭХО-ПАТТЕРН',
-          rationale: 'Зафиксирован цикличный осциллятор исходов 1-1-1-1.',
-          alternationRate: altRate,
-          dominantColor: dominant,
-          cusumState: cusum.state,
-        };
+    if (matrix.currentActiveColor && matrix.currentActiveStreak >= currentMaxStreak && currentMaxStreak > 0) {
+      recommendation = matrix.currentActiveColor === 'RED' ? 'BLACK' : 'RED';
+      confidence = 90;
+      state = 'ОТСКОК ОТ ПОТОЛКА';
+    } else if (L1 === L2) {
+      if (L1 === matrix.alpha && currentMaxStreak > 2) {
+        recommendation = L1;
+        confidence = 75;
+        state = 'АЛЬФА-ТРЕНД';
+      } else if (L1 === matrix.omega) {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+        confidence = 30;
+        state = 'ОМЕГА-ЛОВУШКА';
+      } else {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+        confidence = 50;
+        state = 'НЕЙТРАЛЬНО';
       }
-      // Block A-A-B-B
-      if (L1 === L2 && L3 === L4 && L1 !== L3) {
-        return {
-          recommendation: oppL1,
-          confidence: 64,
-          patternName: 'ПАРНЫЙ БЛОК (2x2)',
-          rationale: 'Завершен второй шаг дуплета. Вход в разворот блока.',
-          alternationRate: altRate,
-          dominantColor: dominant,
-          cusumState: cusum.state,
-        };
+    } else {
+      const zebra = this.getZebraMomentum(history);
+      if (zebra.followL1) {
+        recommendation = L1;
+      } else {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
+      }
+      confidence = zebra.confidence;
+      state = zebra.followL1 ? 'ЧЕРЕДОВАНИЕ (FOLLOW)' : 'ЧЕРЕДОВАНИЕ (BREAK)';
+    }
+
+    if (L1 === matrix.alpha && L2 === matrix.omega) {
+      let omegaStreakBefore = 0;
+      for (let i = nonZero.length - 2; i >= 0; i--) {
+        if (nonZero[i].outcome === matrix.omega) omegaStreakBefore++;
+        else break;
+      }
+      if (omegaStreakBefore >= 2) {
+        recommendation = matrix.alpha;
+        confidence = 85;
+        state = 'ЗАРОЖДЕНИЕ АЛЬФЫ';
       }
     }
 
-    // 3. Strik Parity Break (Streak length >= 4)
-    if (streakLen >= 4 && streakColor !== 'ZERO') {
-      return {
-        recommendation: oppL1,
-        confidence: Math.min(75, 54 + streakLen * 3),
-        patternName: 'ДИСПЕРСИОННЫЙ РАЗВОРОТ СТРИКА',
-        rationale: `Длина одноцветной серии ${streakLen}. Смещение дисперсии в пользу возврата к среднему.`,
-        alternationRate: altRate,
-        dominantColor: dominant,
-        cusumState: cusum.state,
-      };
-    }
-
-    // 4. Alpha Trend Momentum
-    if (dominant !== 'BALANCED' && L1 === dominant) {
-      return {
-        recommendation: dominant,
-        confidence: 62,
-        patternName: 'АЛЬФА-ТРЕНД (ИМПУЛЬС ДОМИНАНТА)',
-        rationale: `Доминирующий цвет ${dominant} (${((dominant === 'RED' ? redCount : blackCount) / last20.length * 100).toFixed(0)}%). Следование тренду.`,
-        alternationRate: altRate,
-        dominantColor: dominant,
-        cusumState: cusum.state,
-      };
-    }
-
-    // 5. Default Momentum Follow
-    return {
-      recommendation: L1,
-      confidence: 53,
-      patternName: 'ЛОКАЛЬНЫЙ ИМПУЛЬС',
-      rationale: 'Нейтральная фаза рынка. Следование за последним цветом.',
-      alternationRate: altRate,
-      dominantColor: dominant,
-      cusumState: cusum.state,
-    };
+    return { recommendation, confidence, state };
   }
 }

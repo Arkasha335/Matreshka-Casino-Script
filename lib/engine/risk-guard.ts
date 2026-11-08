@@ -1,159 +1,150 @@
-import { EngineSettings, SessionStats, SpinRecord } from './types';
+import { HistoryEntry } from './types';
 
-export interface RiskStatus {
-  isHalted: boolean;
-  isZeroFreeze: boolean;
-  freezeRemaining: number;
-  reason: 'NONE' | 'STOP_LOSS_TRIPPED' | 'TAKE_PROFIT_LOCKED' | 'ZERO_FREEZE';
-  message: string;
+export interface DetailedSessionStats {
+  totalSpins: number;
+  totalProfit: number;
+  currentBankroll: number;
+  roi: number;
+  maxDrawdown: number;
+  redCount: number;
+  blackCount: number;
+  zeroCount: number;
+  redPct: number;
+  blackPct: number;
+  zeroPct: number;
+  avgStreakLength: string;
+  zebraRatio: number;
+  avgZeroFrequency: string;
+  profitPerHour: number;
+  maxStreak: number;
+  currentStreakLength: number;
+  currentStreakColor: string | null;
 }
 
 export class RiskGuard {
-  /**
-   * Evaluate session risk limits (Hard Stop-Loss, Trailing Take-Profit, Zero-Freeze).
-   */
-  public static evaluateRisk(
-    records: SpinRecord[],
-    settings: EngineSettings,
-    currentBankroll: number
-  ): RiskStatus {
-    const { initialBankroll, stopLossPct, takeProfitPct, trailingStopPct, zeroFreezeSpins } = settings;
-
-    // 1. Calculate Peak and Drawdown
-    let peak = initialBankroll;
-    let running = initialBankroll;
-    for (const r of records) {
-      running += r.netProfit;
-      if (running > peak) {
-        peak = running;
-      }
-    }
-    // Also include current balance if higher
-    if (currentBankroll > peak) {
-      peak = currentBankroll;
-    }
-
-    const currentDrawdown = peak - currentBankroll;
-    const maxAllowedDrawdown = initialBankroll * stopLossPct;
-
-    // Hard Stop-Loss Check
-    if (currentDrawdown >= maxAllowedDrawdown && records.length > 0) {
-      return {
-        isHalted: true,
-        isZeroFreeze: false,
-        freezeRemaining: 0,
-        reason: 'STOP_LOSS_TRIPPED',
-        message: `ЖЁСТКИЙ СТОП-ЛОСС: Просадка ${currentDrawdown.toLocaleString('ru-RU')} ₽ достигла лимита ${(stopLossPct * 100).toFixed(0)}%. Игра заблокирована для защиты капитала!`,
-      };
-    }
-
-    // Trailing Take-Profit Check
-    const currentProfit = currentBankroll - initialBankroll;
-    const peakProfit = peak - initialBankroll;
-    const takeProfitTarget = initialBankroll * takeProfitPct;
-
-    if (peakProfit >= takeProfitTarget) {
-      const trailingDrop = peakProfit - currentProfit;
-      const allowedDrop = initialBankroll * trailingStopPct;
-      if (trailingDrop >= allowedDrop) {
-        return {
-          isHalted: true,
-          isZeroFreeze: false,
-          freezeRemaining: 0,
-          reason: 'TAKE_PROFIT_LOCKED',
-          message: `ТРЕЙЛИНГ ТЕЙК-ПРОФИТ: Зафиксирована цель прибыли (+${peakProfit.toLocaleString('ru-RU')} ₽). Прибыль сохранена. Рекомендуется закрыть сессию.`,
-        };
-      }
-    }
-
-    // Zero-Freeze Check: Look back up to zeroFreezeSpins
-    let freezeRemaining = 0;
-    if (records.length > 0 && zeroFreezeSpins > 0) {
-      for (let i = 0; i < Math.min(records.length, zeroFreezeSpins); i++) {
-        const idx = records.length - 1 - i;
-        if (records[idx].outcome === 'ZERO') {
-          // Zero occurred (i + 1) spins ago
-          const spinsSinceZero = i + 1;
-          if (spinsSinceZero <= zeroFreezeSpins) {
-            freezeRemaining = zeroFreezeSpins - spinsSinceZero + 1;
-            break;
-          }
-        }
-      }
-    }
-
-    if (freezeRemaining > 0) {
-      return {
-        isHalted: false,
-        isZeroFreeze: true,
-        freezeRemaining,
-        reason: 'ZERO_FREEZE',
-        message: `ZERO-FREEZE: Обнаружен сектор Зеро! Режим заморозки: пропустите еще ${freezeRemaining} спин(а) для исключения дуплета.`,
-      };
-    }
-
-    return {
-      isHalted: false,
-      isZeroFreeze: false,
-      freezeRemaining: 0,
-      reason: 'NONE',
-      message: 'Режим в норме. Риск-фильтры пройдены.',
-    };
-  }
-
-  /**
-   * Compute comprehensive session metrics.
-   */
-  public static computeSessionStats(
-    records: SpinRecord[],
+  public static computeDetailedStats(
+    history: HistoryEntry[],
     initialBankroll: number,
     sessionStartTime: number,
-    currentTime: number
-  ): SessionStats {
+    now: number
+  ): DetailedSessionStats {
     let currentBankroll = initialBankroll;
     let peak = initialBankroll;
     let maxDrawdown = 0;
-    let wins = 0;
-    let losses = 0;
-    let zeros = 0;
+    let redCount = 0;
+    let blackCount = 0;
+    let zeroCount = 0;
 
-    for (const r of records) {
-      currentBankroll += r.netProfit;
+    let totalStreaks = 0;
+    let totalStreakLength = 0;
+    let colorChanges = 0;
+    const zeroIntervals: number[] = [];
+    let lastZeroIndex = -1;
+
+    let currentStreakLen = 0;
+    let currentStreakCol: string | null = null;
+    let maxStreak = 0;
+    let tempStreak = 0;
+    let tempCol: string | null = null;
+
+    for (let i = 0; i < history.length; i++) {
+      const h = history[i];
+      currentBankroll += h.netProfit;
       if (currentBankroll > peak) peak = currentBankroll;
       const dd = peak - currentBankroll;
       if (dd > maxDrawdown) maxDrawdown = dd;
 
-      if (r.outcome === 'ZERO') zeros++;
-      else if (r.isWin) wins++;
-      else losses++;
+      if (h.outcome === 'RED') redCount++;
+      else if (h.outcome === 'BLACK') blackCount++;
+      else if (h.outcome === 'ZERO') zeroCount++;
+
+      // Max Streak
+      if (h.outcome === tempCol) {
+        tempStreak++;
+      } else {
+        tempCol = h.outcome;
+        tempStreak = 1;
+      }
+      if (tempStreak > maxStreak) maxStreak = tempStreak;
+
+      // Intervals and streaks
+      if (h.outcome === 'ZERO') {
+        if (lastZeroIndex !== -1) {
+          zeroIntervals.push(i - lastZeroIndex);
+        }
+        lastZeroIndex = i;
+        if (currentStreakLen > 0) {
+          totalStreaks++;
+          totalStreakLength += currentStreakLen;
+        }
+        currentStreakLen = 0;
+        currentStreakCol = null;
+      } else {
+        if (h.outcome === currentStreakCol) {
+          currentStreakLen++;
+        } else {
+          if (currentStreakLen > 0) {
+            totalStreaks++;
+            totalStreakLength += currentStreakLen;
+            colorChanges++;
+          }
+          currentStreakCol = h.outcome;
+          currentStreakLen = 1;
+        }
+      }
     }
 
+    if (currentStreakLen > 0) {
+      totalStreaks++;
+      totalStreakLength += currentStreakLen;
+    }
+
+    const totalSpins = history.length;
     const totalProfit = currentBankroll - initialBankroll;
     const roi = initialBankroll > 0 ? (totalProfit / initialBankroll) * 100 : 0;
-    const maxDrawdownPct = initialBankroll > 0 ? (maxDrawdown / initialBankroll) * 100 : 0;
-    const totalSpins = records.length;
-    const winRate = (wins + losses) > 0 ? (wins / (wins + losses)) * 100 : 0;
+    const redPct = totalSpins > 0 ? Math.round((redCount / totalSpins) * 100) : 0;
+    const blackPct = totalSpins > 0 ? Math.round((blackCount / totalSpins) * 100) : 0;
+    const zeroPct = totalSpins > 0 ? Math.round((zeroCount / totalSpins) * 100) : 0;
 
-    const durationMs = Math.max(1000, currentTime - sessionStartTime);
-    const hours = durationMs / 3600000;
-    const profitPerHour = hours > 0 ? totalProfit / hours : 0;
+    const avgStreakLength = totalStreaks > 0 ? (totalStreakLength / totalStreaks).toFixed(2) : '0.00';
+    const zebraRatio = totalSpins > 1 ? Math.round((colorChanges / (totalSpins - 1)) * 100) : 0;
+    const avgZeroFrequency = zeroIntervals.length > 0 ? (zeroIntervals.reduce((a, b) => a + b, 0) / zeroIntervals.length).toFixed(1) : 'N/A';
+
+    const durationMs = Math.max(1000, now - sessionStartTime);
+    const profitPerHour = durationMs > 0 ? totalProfit / (durationMs / 3600000) : 0;
+
+    let currentStreakColor: string | null = null;
+    let currentStreakLength = 0;
+    if (history.length > 0) {
+      currentStreakColor = history[history.length - 1].outcome;
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].outcome === currentStreakColor) {
+          currentStreakLength++;
+        } else {
+          break;
+        }
+      }
+    }
 
     return {
-      initialBankroll,
-      currentBankroll,
+      totalSpins,
       totalProfit,
+      currentBankroll,
       roi,
       maxDrawdown,
-      maxDrawdownPct,
-      peakBankroll: peak,
-      totalSpins,
-      winCount: wins,
-      lossCount: losses,
-      zeroCount: zeros,
-      winRate,
+      redCount,
+      blackCount,
+      zeroCount,
+      redPct,
+      blackPct,
+      zeroPct,
+      avgStreakLength,
+      zebraRatio,
+      avgZeroFrequency,
       profitPerHour,
-      durationMs,
-      status: 'ACTIVE',
+      maxStreak,
+      currentStreakLength,
+      currentStreakColor,
     };
   }
 }
