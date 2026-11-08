@@ -1,0 +1,176 @@
+{
+  "total_files": 12,
+  "total_raw_entries": 984,
+  "total_normalized_spins": 984,
+  "parsing_issues": [],
+  "sessions_summary": [
+    {
+      "session_id": "matreshka_session_2026-04-05 (1)",
+      "file": "matreshka_session_2026-04-05 (1).json",
+      "metadata": {
+        "date": "2026-04-05T14:29:19.416Z",
+        "totalProfit": 303475.5599999996,
+        "maxDrawdown": 197505,
+        "durationMs": 975843
+      },
+      "spins_count": 81,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-05 (2)",
+      "file": "matreshka_session_2026-04-05 (2).json",
+      "metadata": {
+        "date": "2026-04-05T15:44:05.263Z",
+        "totalProfit": -303605.4400000004,
+        "maxDrawdown": 540141,
+        "durationMs": 462306
+      },
+      "spins_count": 39,
+      "has_cycle_history": true,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-05 ",
+      "file": "matreshka_session_2026-04-05 .json",
+      "metadata": {
+        "date": "2026-04-05T16:27:59.225Z",
+        "totalProfit": 18924.419999999925,
+        "maxDrawdown": 15000,
+        "durationMs": 593726
+      },
+      "spins_count": 50,
+      "has_cycle_history": true,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-05",
+      "file": "matreshka_session_2026-04-05.json",
+      "metadata": {
+        "date": "2026-04-05T09:58:45.104Z",
+        "totalProfit": -74027.68,
+        "maxDrawdown": 106630.9359999997,
+        "durationMs": 1802989
+      },
+      "spins_count": 160,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-06 (2)",
+      "file": "matreshka_session_2026-04-06 (2).json",
+      "metadata": {
+        "date": "2026-04-06T16:50:47.488Z",
+        "totalProfit": -96413.52000000002,
+        "maxDrawdown": 118038,
+        "durationMs": 917839
+      },
+      "spins_count": 75,
+      "has_cycle_history": true,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-07 (1)",
+      "file": "matreshka_session_2026-04-07 (1).json",
+      "metadata": {
+        "date": "2026-04-07T16:35:28.828Z",
+        "totalProfit": 95817.5,
+        "maxDrawdown": 340011,
+        "durationMs": 1358607
+      },
+      "spins_count": 100,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-07 (3)",
+      "file": "matreshka_session_2026-04-07 (3).json",
+      "metadata": {
+        "date": "2026-04-07T12:58:10.985Z",
+        "totalProfit": 204328.2999999998,
+        "maxDrawdown": 962498,
+        "durationMs": 698711
+      },
+      "spins_count": 52,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-07 (4)",
+      "file": "matreshka_session_2026-04-07 (4).json",
+      "metadata": {
+        "date": "2026-04-07T14:07:40.405Z",
+        "totalProfit": 117303.70000000019,
+        "maxDrawdown": 674354,
+        "durationMs": 1157776
+      },
+      "spins_count": 91,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-07",
+      "file": "matreshka_session_2026-04-07.json",
+      "metadata": {
+        "date": "2026-04-07T16:16:44.806Z",
+        "totalProfit": 61280.07999999996,
+        "maxDrawdown": 29010,
+        "durationMs": 778772
+      },
+      "spins_count": 60,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-08",
+      "file": "matreshka_session_2026-04-08.json",
+      "metadata": {
+        "date": "2026-04-08T11:12:53.359Z",
+        "totalProfit": 213605.8200000003,
+        "maxDrawdown": 51857,
+        "durationMs": 857317
+      },
+      "spins_count": 72,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-09 (1)",
+      "file": "matreshka_session_2026-04-09 (1).json",
+      "metadata": {
+        "date": "2026-04-09T17:02:54.653Z",
+        "totalProfit": -1116457,
+        "maxDrawdown": 1213079.04,
+        "durationMs": 678542
+      },
+      "spins_count": 51,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    },
+    {
+      "session_id": "matreshka_session_2026-04-09",
+      "file": "matreshka_session_2026-04-09.json",
+      "metadata": {
+        "date": "2026-04-09T12:00:44.423Z",
+        "totalProfit": 200901.17999999993,
+        "maxDrawdown": 40114,
+        "durationMs": 1964780
+      },
+      "spins_count": 153,
+      "has_cycle_history": false,
+      "anomalies_count": 0,
+      "anomalies": []
+    }
+  ]
+}
