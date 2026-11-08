@@ -200,9 +200,14 @@ export default function MatreshkaQuantum() {
     return BankrollManager.getEngineParams(strategyProfile, currentMode, currentBankroll);
   }, [strategyProfile, currentMode, currentBankroll]);
 
+  const prevBetAmount = useMemo(() => {
+    if (currentStep <= 1 || history.length === 0) return undefined;
+    return history[history.length - 1]?.betAmount;
+  }, [currentStep, history]);
+
   const nextCalculatedBet = useMemo(() => {
-    return BankrollManager.calculateBet(cdt, currentStep, currentMode, engineParams, currentBankroll);
-  }, [cdt, currentStep, currentMode, engineParams, currentBankroll]);
+    return BankrollManager.calculateBet(cdt, currentStep, currentMode, engineParams, currentBankroll, prevBetAmount);
+  }, [cdt, currentStep, currentMode, engineParams, currentBankroll, prevBetAmount]);
 
   const effectiveBet = manualBet !== null ? manualBet : nextCalculatedBet;
 
@@ -539,7 +544,7 @@ export default function MatreshkaQuantum() {
           <div className="flex items-center justify-center gap-2 mb-2">
             <Sparkles className="text-emerald-400" size={20} />
             <h1 className="text-xl font-black text-white tracking-widest uppercase">MATRESHKA QUANTUM</h1>
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.3 QUANTUM APEX</span>
+            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.4 QUANTUM APEX</span>
           </div>
           <p className="text-gray-400 text-center text-xs mb-3">Калиброванное ядро: 50 слотов, 2 Зеро (4%), комиссия 2%, лимит 1 000 000 ₽</p>
           <div className="bg-black/40 border border-gray-800 rounded-xl p-2.5 mb-5 text-[11px] text-gray-400 text-center font-mono">
@@ -600,7 +605,7 @@ export default function MatreshkaQuantum() {
                 >
                   <Shield size={16} />
                   <span>SHIELD</span>
-                  <span className="text-[9px] font-mono text-gray-400">11 шагов</span>
+                  <span className="text-[9px] font-mono text-gray-400">10 шагов</span>
                 </button>
               </div>
             </div>
@@ -641,7 +646,7 @@ export default function MatreshkaQuantum() {
               disabled={!setupVal || Number(setupVal) <= 0}
               className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-black py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_0_25px_rgba(16,185,129,0.3)] text-sm cursor-pointer"
             >
-              Запустить Движок v12.3 APEX
+              Запустить Движок v12.4 APEX
             </button>
 
             {savedSessions.length > 0 && (
@@ -678,7 +683,7 @@ export default function MatreshkaQuantum() {
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12.3 APEX</h1>
+              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12.4 APEX</h1>
               <span className="text-[10px] font-mono text-gray-400 bg-gray-900 border border-gray-800 px-1.5 py-0.5 rounded">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
@@ -777,9 +782,9 @@ export default function MatreshkaQuantum() {
 
           {/* Mode Strategy Hint */}
           <div className="text-[10px] font-medium text-gray-400 text-center mb-1">
-            {currentMode === 'ZEBRA' && '✨ Высокий винрейт 1-го шага • Полная прочность 10 шагов'}
-            {currentMode === 'TRANSITION' && '⚡ Переходная зона (серии 3-4) • Мин. база 1 000 ₽ • Готовность к зебре'}
-            {currentMode === 'DANGER' && '🛡️ Аномалии сервера / Zero спам • Альфа-тренд • Защита банка'}
+            {currentMode === 'ZEBRA' && '✨ Чередование: ускоренный сбор прибыли (B₀ до 3 000 ₽) • 9 шагов • Высокий EV'}
+            {currentMode === 'TRANSITION' && '⚡ Переходная зона: стабилизация (B₀ 1 500 ₽) • 10 шагов • Защита от серий 3-4'}
+            {currentMode === 'DANGER' && '🛡️ Аномалии сервера / Zero: защита банка (B₀ 1 000 ₽) • 10 шагов • 980k Horizon Guard'}
           </div>
 
           {/* Dynamic Constant Multiplier Badge */}
@@ -1108,7 +1113,7 @@ export default function MatreshkaQuantum() {
                   <div className="font-bold text-emerald-400 text-xs flex items-center gap-1.5 mb-1">
                     <Sparkles size={14} /> APEX OPT (Математический Идеал)
                   </div>
-                  <div className="text-[11px] text-gray-300">Гарантия 10 шагов до 1М лимита стола (B₀ до 1 600 ₽). Минимальный X + терминальный съём. 14/14 побед в бенчмарках.</div>
+                  <div className="text-[11px] text-gray-300">Максимальная доходность (+1.39M ₽, 15/15 побед). Зебра 3 000 ₽ (9 шагов), Переход 1 500 ₽ (10 шагов), Опасность 1 000 ₽ (10 шагов). 980k Horizon Guard.</div>
                 </button>
 
                 <button
@@ -1120,7 +1125,7 @@ export default function MatreshkaQuantum() {
                   <div className="font-bold text-amber-400 text-xs flex items-center gap-1.5 mb-1">
                     <Zap size={14} /> TURBO HARVEST (Максимальный разгон)
                   </div>
-                  <div className="text-[11px] text-gray-300">Гарантия 9 шагов до лимита 1М (B₀ до 3 300 ₽). Чистый минимальный TBB без риска геометрического перелёта.</div>
+                  <div className="text-[11px] text-gray-300">Агрессивный съём профита (+1.47M ₽, 15/15 побед). Зебра 3 500 ₽ (9 шагов), Переход 1 800 ₽ (10 шагов), Опасность 1 000 ₽ (10 шагов).</div>
                 </button>
 
                 <button
@@ -1132,7 +1137,7 @@ export default function MatreshkaQuantum() {
                   <div className="font-bold text-blue-400 text-xs flex items-center gap-1.5 mb-1">
                     <Shield size={14} /> SHIELD ULTRA (Ультра-консервативный)
                   </div>
-                  <div className="text-[11px] text-gray-300">Максимальная броня: 11 шагов запаса до лимита стола (B₀ до 800 ₽). Защита от экстремальных аномалий сервера.</div>
+                  <div className="text-[11px] text-gray-300">Максимальная броня (+1.00M ₽, 15/15 побед). Просадка &lt; 900k ₽. 10 шагов запаса. Зебра 2 000 ₽, Переход 1 200 ₽, Опасность 1 000 ₽.</div>
                 </button>
               </div>
             </motion.div>
