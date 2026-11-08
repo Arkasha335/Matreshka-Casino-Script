@@ -7,3 +7,5 @@ coverage/
 !.env.example
 lib/licenses.json
 *.tsbuildinfo
+__pycache__/
+*.pyc

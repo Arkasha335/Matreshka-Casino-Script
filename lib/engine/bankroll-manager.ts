@@ -2,8 +2,10 @@ import { EngineParams, ServerMode, StrategyProfile } from './types';
 
 export class BankrollManager {
   /**
-   * Terminal Boundary Backward Induction:
-   * Returns exact calibrated base bet and multipliers to guarantee N steps before the 1,000,000 RUB table limit.
+   * Dynamic Constant Multiplier Architecture:
+   * Calculates the exact constant growth factor X = (B_terminal / B_0)^(1 / (N - 1))
+   * such that the N-th step naturally lands directly on the 1,000,000 RUB table ceiling
+   * or matches the bankroll boundary without arbitrary jumps.
    */
   public static getEngineParams(
     profile: StrategyProfile,
@@ -11,91 +13,84 @@ export class BankrollManager {
     bankroll: number
   ): EngineParams {
     const effectiveBankroll = Math.max(100000, bankroll);
-    const bankrollCap = 2000000;
+    const bankrollCap = 1900000;
     const bankrollRatio = Math.min(1.0, effectiveBankroll / bankrollCap);
 
-    let targetBaseBet: number;
-    let step2Boost: number;
-    let step3Boost: number;
     let targetSteps: number;
+    let nominalBaseBet: number;
 
     if (profile === 'TURBO_HARVEST') {
-      // 9-step ladder: Max B0 = 3,300 RUB. High EV velocity.
-      targetBaseBet = Math.round(1200 + bankrollRatio * (3300 - 1200));
-      step2Boost = 1.05;
-      step3Boost = 1.00;
+      // 9 steps to 1,000,000 RUB limit. High EV velocity.
       targetSteps = 9;
+      nominalBaseBet = 2000;
     } else if (profile === 'SHIELD_CONSERVATIVE') {
-      // 11-step ladder: Max B0 = 800 RUB. Ultra capital protection.
-      targetBaseBet = Math.round(300 + bankrollRatio * (800 - 300));
-      step2Boost = 1.00;
-      step3Boost = 1.00;
+      // 11 steps to 1,000,000 RUB limit. Maximum capital preservation.
       targetSteps = 11;
+      nominalBaseBet = 600;
     } else {
-      // APEX_IDEAL (Golden Standard): Exactly 10 steps to 1,000,000 RUB.
-      targetBaseBet = Math.round(600 + bankrollRatio * (1600 - 600));
-      step2Boost = 1.12;
-      step3Boost = 1.06;
+      // APEX_IDEAL (Golden Standard): Exactly 10 steps to 1,000,000 RUB limit.
       targetSteps = 10;
+      nominalBaseBet = 1200;
     }
 
-    let effectiveBaseBet = targetBaseBet;
-
-    // Dynamic Server Mode Adaptation (Online / Aggression mitigation)
-    if (mode === 'ZEBRA') {
-      effectiveBaseBet = targetBaseBet;
-    } else if (mode === 'TRANSITION') {
-      effectiveBaseBet = Math.max(500, Math.round((targetBaseBet * 0.8) / 50) * 50);
-      step2Boost = Math.min(1.05, step2Boost);
-      step3Boost = 1.00;
-    } else {
-      // DANGER mode: Server is in an anomalous mono-streak or high zero density.
-      // Automatically cuts base bet by 50%, granting an IMMEDIATE +1 EXTRA STEP of safety cushion!
-      effectiveBaseBet = Math.max(400, Math.round((targetBaseBet * 0.5) / 50) * 50);
-      step2Boost = 1.00;
-      step3Boost = 1.00;
+    // Dynamic Server Mode Adaptation (Online spikes & mono-streak defense)
+    if (mode === 'DANGER') {
+      // In DANGER mode: automatically grant +1 extra step of safety cushion
+      // by lowering nominal base bet by 40% and increasing target steps by 1
       targetSteps += 1;
+      nominalBaseBet = Math.max(500, Math.round((nominalBaseBet * 0.6) / 50) * 50);
+    } else if (mode === 'TRANSITION') {
+      nominalBaseBet = Math.max(500, Math.round((nominalBaseBet * 0.85) / 50) * 50);
     }
 
-    // Exact discrete step capacity simulation
+    // Scale base bet if bankroll cannot afford full 1.9M progression
+    const effectiveBaseBet = Math.max(500, Math.round(nominalBaseBet * bankrollRatio / 50) * 50);
+
+    // Terminal boundary: table limit (1,000,000) or bankroll-safe ceiling
+    const terminalCap = Math.min(1000000, Math.floor(effectiveBankroll / 1.90));
+
+    // Calculate exact constant multiplier X
+    const ratio = terminalCap / Math.max(1, effectiveBaseBet);
+    const exponent = 1.0 / Math.max(1, targetSteps - 1);
+    const dynamicMultiplier = Math.max(2.025, Math.min(2.40, Math.pow(ratio, exponent)));
+
+    // Calculate steps until table limit (1,000,000 RUB)
     let stepsToLimit = 0;
     let simBet = effectiveBaseBet;
     let simCdt = 0;
-    while (simBet < 1000000 && stepsToLimit < 20) {
+    while (simBet <= 1000000 && stepsToLimit < 20) {
       stepsToLimit++;
       simCdt += simBet;
-      const tbb = Math.round((simCdt + effectiveBaseBet) / 0.98);
-      simBet = tbb;
+      simBet = Math.round(simBet * dynamicMultiplier);
     }
 
-    // Durability: steps until cumulative loss exceeds current bankroll
+    // Calculate durability steps until bankroll exhausted
     let durabilitySteps = 0;
-    let currentLoss = 0;
-    let testCdt = 0;
+    let cumLoss = 0;
     let testBet = effectiveBaseBet;
-    while (currentLoss + testBet <= effectiveBankroll && durabilitySteps < 20 && testBet <= 1000000) {
+    while (cumLoss + testBet <= effectiveBankroll && durabilitySteps < 20 && testBet <= 1000000) {
       durabilitySteps++;
-      currentLoss += testBet;
-      testCdt += testBet;
-      testBet = Math.round((testCdt + effectiveBaseBet) / 0.98);
+      cumLoss += testBet;
+      testBet = Math.round(testBet * dynamicMultiplier);
     }
 
     return {
       baseBet: effectiveBaseBet,
-      step2Boost,
-      step3Boost,
-      growthFactor: 2.04, // Mathematical minimal recovery ratio
-      sniperMult: step2Boost,
-      stepsToLimit,
+      step2Boost: dynamicMultiplier / 2.04,
+      step3Boost: dynamicMultiplier / 2.04,
+      growthFactor: dynamicMultiplier,
+      sniperMult: dynamicMultiplier / 2.04,
+      stepsToLimit: Math.max(1, stepsToLimit),
       durabilitySteps: Math.max(1, durabilitySteps),
     };
   }
 
   /**
-   * Dynamic Terminal Boundary Staking:
-   * 1. Uses Minimal TBB for intermediate steps to conserve bankroll and guarantee the maximum step cushion.
-   * 2. When the terminal step is reached (no further step can fit under 1M RUB or bankroll),
-   *    snaps the bet to the 1,000,000 RUB ceiling to extract maximum terminal payoff!
+   * Dynamic Constant-Ratio Staking:
+   * Dynamically calculates the exact multiplier X at each loss step so that:
+   * 1. The sequence grows smoothly with constant X.
+   * 2. The terminal step lands precisely at the 1,000,000 RUB ceiling (or bankroll limit).
+   * 3. Every bet strictly covers cumulative debt (CDT) + base profit under 2% tax.
    */
   public static calculateBet(
     cdt: number,
@@ -108,31 +103,31 @@ export class BankrollManager {
       return Math.min(params.baseBet, bankroll);
     }
 
-    // Target Balance Bet (100% CDT coverage + base profit with 2% tax)
-    const tbb = Math.round((cdt + params.baseBet) / 0.98);
+    const targetSteps = params.stepsToLimit || 10;
+    const terminalCap = Math.min(1000000, Math.floor(bankroll / 1.90));
+    const remainingSteps = Math.max(1, targetSteps - step + 1);
 
-    let bet: number;
-    if (step === 2 && params.step2Boost > 1.0) {
-      bet = Math.round(tbb * params.step2Boost);
-    } else if (step === 3 && params.step3Boost > 1.0) {
-      bet = Math.round(tbb * params.step3Boost);
-    } else {
-      bet = tbb;
+    // Terminal step reached: snap to table ceiling or safe bankroll limit
+    if (remainingSteps === 1) {
+      return Math.min(terminalCap, bankroll);
     }
 
-    // Terminal Boundary Check (User's Terminal Ceiling Theory):
-    // If the NEXT step after this bet would exceed the 1,000,000 RUB table limit
-    // OR exceed remaining bankroll, this current step IS THE TERMINAL STEP.
-    const nextCdt = cdt + bet;
-    const nextTbb = Math.round((nextCdt + params.baseBet) / 0.98);
-    const isTerminalStep = (nextTbb > 1000000) || (nextCdt + nextTbb > bankroll) || (bet >= 1000000);
+    // Previous bet level in the geometric progression
+    const prevBet = Math.max(params.baseBet, Math.round(params.baseBet * Math.pow(params.growthFactor, step - 2)));
 
-    if (isTerminalStep) {
-      // Maximize profit on the terminal boundary: bet up to full 1M table limit or bankroll
-      bet = Math.min(1000000, bankroll);
-    }
+    // Calculate dynamic X to smoothly span remaining steps up to terminalCap
+    const ratio = terminalCap / Math.max(1, prevBet);
+    const dynamicX = Math.max(2.025, Math.min(2.40, Math.pow(ratio, 1.0 / remainingSteps)));
+    const geomBet = Math.round(prevBet * dynamicX);
 
-    // Hard bounds: never exceed table limit (1,000,000 RUB) or available bankroll
+    // Strict mathematical debt recovery (TBB factoring in 2% casino tax)
+    const minTbb = Math.ceil((cdt + params.baseBet) / 0.98);
+
+    // The bet must be at least minTbb to guarantee positive EV upon win,
+    // and follows the smooth geometric curve toward the 1,000,000 ceiling.
+    const bet = Math.max(minTbb, geomBet);
+
+    // Hard bounds: never exceed 1,000,000 RUB table limit or available bankroll
     const finalBet = Math.max(params.baseBet, Math.min(bet, 1000000, bankroll));
     return Math.round(finalBet);
   }

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info, Download, Sliders, Zap, Shield, Sparkles } from 'lucide-react';
+import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info, Download, Sliders, Zap, Shield, Sparkles, Minimize2, Maximize2, Monitor, Layers } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -117,6 +117,7 @@ export default function MatreshkaQuantum() {
   const [showSummary, setShowSummary] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [isFloatingMode, setIsFloatingMode] = useState(false);
 
   // Interval timer
   useEffect(() => {
@@ -670,7 +671,7 @@ export default function MatreshkaQuantum() {
     <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-emerald-500/30 pb-16 transition-colors duration-500">
       {/* Header */}
       <header className="border-b border-gray-800 bg-[#050505]/90 backdrop-blur-md sticky top-0 z-20">
-        <div className="max-w-md mx-auto px-4 py-3 flex justify-between items-center">
+        <div className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
@@ -691,6 +692,17 @@ export default function MatreshkaQuantum() {
 
           <div className="flex items-center gap-2">
             <button
+              onClick={() => setIsFloatingMode(!isFloatingMode)}
+              className={`p-2.5 rounded-xl border transition-all ${
+                isFloatingMode
+                  ? 'bg-emerald-600 border-emerald-500 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]'
+                  : 'text-gray-400 hover:text-white bg-gray-900 border-gray-800'
+              }`}
+              title={isFloatingMode ? 'Закрыть плавающий оверлей' : 'Включить плавающий оверлей / мини-окно поверх игры'}
+            >
+              <Layers size={18} />
+            </button>
+            <button
               onClick={() => setShowProfileModal(true)}
               className="text-gray-400 hover:text-white transition-colors p-2.5 bg-gray-900 rounded-xl border border-gray-800"
               title="Выбор режима агрессии"
@@ -708,7 +720,10 @@ export default function MatreshkaQuantum() {
         </div>
       </header>
 
-      <main className="max-w-md mx-auto p-4 space-y-4">
+      <main className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto p-4 space-y-4">
+        <div className="md:grid md:grid-cols-2 md:gap-6 lg:gap-8 items-start space-y-4 md:space-y-0">
+          {/* Left Column: Command & Play Area */}
+          <div className="space-y-4">
         {/* Main Quantum Display Card */}
         <motion.div
           key={`${currentStep}-${currentMode}-${recommendation}`}
@@ -745,6 +760,13 @@ export default function MatreshkaQuantum() {
             <span>{prediction.state}</span>
             <span className="text-gray-600">•</span>
             <span className="text-emerald-400 font-mono">{prediction.confidence}% уверенность</span>
+          </div>
+
+          {/* Dynamic Constant Multiplier Badge */}
+          <div className="text-[10px] font-mono text-gray-400 bg-gray-900/80 border border-gray-800 px-2.5 py-0.5 rounded-full mb-1 flex items-center gap-1.5 shadow-sm">
+            <span>Множитель X: <strong className="text-emerald-400 font-bold">{engineParams.growthFactor.toFixed(3)}x</strong></span>
+            <span className="text-gray-600">•</span>
+            <span>Потолок 1М на шаге {engineParams.stepsToLimit}</span>
           </div>
 
           {/* Next Recommendation in Large Display */}
@@ -900,134 +922,139 @@ export default function MatreshkaQuantum() {
           <Undo2 size={15} /> Отменить Последний Ввод [Backspace / .]
         </button>
 
-        {/* Analytics Stream (Apex Matrix, Skew, Skew 15, Alpha/Omega) */}
-        <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4 space-y-3">
-          <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-            <span className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Аналитика Потока</span>
-            <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-black border ${
-              currentMode === 'DANGER' ? 'text-red-400 border-red-500/40' : 'text-emerald-400 border-emerald-500/40'
-            }`}>
-              {currentMode === 'DANGER' ? 'DANGER' : `Уверенность: ${prediction.confidence}%`}
-            </span>
+            {/* Risk Meter (Dynamic Durability to 1M Limit) */}
+            <div className="w-full bg-gray-900/60 rounded-2xl p-4 border border-gray-800">
+              <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 mb-2.5 tracking-widest uppercase font-mono">
+                <span>Запас прочности: {currentStep} / {engineParams.stepsToLimit} шагов</span>
+                <span className={currentStep >= engineParams.stepsToLimit ? 'text-amber-400 font-black animate-pulse' : 'text-emerald-400'}>
+                  {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до лимита 1М
+                </span>
+              </div>
+              <div className="flex gap-1.5 h-3">
+                {Array.from({ length: Math.max(8, engineParams.stepsToLimit) }, (_, idx) => idx + 1).map(i => {
+                  let bgColor = 'bg-gray-800';
+                  if (i <= currentStep) {
+                    if (i <= Math.floor(engineParams.stepsToLimit * 0.4)) bgColor = 'bg-emerald-500';
+                    else if (i <= Math.floor(engineParams.stepsToLimit * 0.7)) bgColor = 'bg-yellow-500';
+                    else if (i < engineParams.stepsToLimit) bgColor = 'bg-red-500';
+                    else bgColor = 'bg-amber-400 animate-pulse';
+                  }
+                  return (
+                    <div
+                      key={i}
+                      className={`flex-1 rounded-sm ${bgColor} transition-colors duration-300`}
+                      title={`Шаг ${i} из ${engineParams.stepsToLimit}`}
+                    />
+                  );
+                })}
+              </div>
+              {currentStep >= engineParams.stepsToLimit && (
+                <div className="mt-2.5 bg-amber-500/20 border border-amber-500/50 rounded-xl p-2 text-center text-amber-300 text-[10px] font-black uppercase tracking-wider">
+                  ⚡ Терминальный шаг: ставка упирается в потолок стола (1 000 000 ₽) для максимального съёма профита
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-            <div>
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Глобально</div>
-              <div className="text-gray-300 font-bold">
-                К {Math.round(globalSkew.red)}% / Ч {Math.round(globalSkew.black)}%
+          {/* Right Column: Deep Analytical Stream & Real-time Intelligence */}
+          <div className="space-y-4">
+            {/* Live Chart.js */}
+            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4">
+              <div className="flex justify-between items-center mb-3">
+                <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">График Баланса</div>
+                <button
+                  onClick={exportSessionLogs}
+                  className="flex items-center gap-1 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+                >
+                  <Download size={12} /> Экспорт JSON
+                </button>
+              </div>
+              <div className="h-44 w-full">
+                <Line data={chartData} options={chartOptions as any} />
               </div>
             </div>
-            <div>
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Локально (15)</div>
-              <div className="text-gray-300 font-bold">
-                К {Math.round(localSkew.red)}% / Ч {Math.round(localSkew.black)}%
-              </div>
-            </div>
-            <div>
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Альфа-Цвет</div>
-              <div className={`font-bold ${apexMatrix.alpha === 'RED' ? 'text-red-500' : apexMatrix.alpha === 'BLACK' ? 'text-gray-300' : 'text-gray-500'}`}>
-                {apexMatrix.alpha === 'RED' ? 'КРАСНОЕ' : apexMatrix.alpha === 'BLACK' ? 'ЧЁРНОЕ' : 'НЕТ'}
-              </div>
-            </div>
-            <div>
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Макс. Серии (20)</div>
-              <div className="text-gray-300 font-bold">
-                К: {apexMatrix.maxStreakRed} / Ч: {apexMatrix.maxStreakBlack}
-              </div>
-            </div>
-            <div>
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Распределение</div>
-              <div className="flex gap-1.5 font-bold">
-                <span className="text-red-500">{detailedStats.redCount} ({detailedStats.redPct}%)</span>
-                <span className="text-gray-400">{detailedStats.blackCount} ({detailedStats.blackPct}%)</span>
-                <span className="text-emerald-500">{detailedStats.zeroCount} ({detailedStats.zeroPct}%)</span>
-              </div>
-            </div>
-            <div>
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Текущая Серия</div>
-              <div className="text-white font-bold">
-                {detailedStats.currentStreakColor === 'RED' ? 'Красное' : detailedStats.currentStreakColor === 'BLACK' ? 'Чёрное' : detailedStats.currentStreakColor === 'ZERO' ? 'Зеро' : '-'} : {detailedStats.currentStreakLength}
-              </div>
-            </div>
-          </div>
-        </div>
 
-        {/* Deep Stats (Streak Avg, Zebra %, Zero Frequency) */}
-        <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4">
-          <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold mb-3">Глубокая Статистика</div>
-          <div className="grid grid-cols-3 gap-2 text-center font-mono">
-            <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Ср. длина серии</div>
-              <div className="text-white font-bold text-sm">{detailedStats.avgStreakLength}</div>
-            </div>
-            <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Коэф. Зебры</div>
-              <div className="text-emerald-400 font-bold text-sm">{detailedStats.zebraRatio}%</div>
-            </div>
-            <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
-              <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Частота Зеро</div>
-              <div className="text-yellow-400 font-bold text-sm">{detailedStats.avgZeroFrequency}</div>
-            </div>
-          </div>
-        </div>
+            {/* Analytics Stream (Apex Matrix, Skew, Skew 15, Alpha/Omega) */}
+            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4 space-y-3">
+              <div className="flex justify-between items-center border-b border-gray-800 pb-2">
+                <span className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Аналитика Потока</span>
+                <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-black border ${
+                  currentMode === 'DANGER' ? 'text-red-400 border-red-500/40' : 'text-emerald-400 border-emerald-500/40'
+                }`}>
+                  {currentMode === 'DANGER' ? 'DANGER' : `Уверенность: ${prediction.confidence}%`}
+                </span>
+              </div>
 
-        {/* Live Chart.js */}
-        <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4">
-          <div className="flex justify-between items-center mb-3">
-            <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">График Баланса</div>
-            <button
-              onClick={exportSessionLogs}
-              className="flex items-center gap-1 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
-            >
-              <Download size={12} /> Экспорт JSON
-            </button>
-          </div>
-          <div className="h-36 w-full">
-            <Line data={chartData} options={chartOptions as any} />
-          </div>
-        </div>
-
-        {/* Risk Meter (Dynamic Durability to 1M Limit) */}
-        <div className="w-full bg-gray-900/60 rounded-2xl p-4 border border-gray-800">
-          <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 mb-2.5 tracking-widest uppercase font-mono">
-            <span>Запас прочности: {currentStep} / {engineParams.stepsToLimit} шагов</span>
-            <span className={currentStep >= engineParams.stepsToLimit ? 'text-amber-400 font-black animate-pulse' : 'text-emerald-400'}>
-              {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до лимита 1М
-            </span>
-          </div>
-          <div className="flex gap-1.5 h-3">
-            {Array.from({ length: Math.max(8, engineParams.stepsToLimit) }, (_, idx) => idx + 1).map(i => {
-              let bgColor = 'bg-gray-800';
-              if (i <= currentStep) {
-                if (i <= Math.floor(engineParams.stepsToLimit * 0.4)) bgColor = 'bg-emerald-500';
-                else if (i <= Math.floor(engineParams.stepsToLimit * 0.7)) bgColor = 'bg-yellow-500';
-                else if (i < engineParams.stepsToLimit) bgColor = 'bg-red-500';
-                else bgColor = 'bg-amber-400 animate-pulse';
-              }
-              return (
-                <div
-                  key={i}
-                  className={`flex-1 rounded-sm ${bgColor} transition-colors duration-300`}
-                  title={`Шаг ${i} из ${engineParams.stepsToLimit}`}
-                />
-              );
-            })}
-          </div>
-          {currentStep >= engineParams.stepsToLimit && (
-            <div className="mt-2.5 bg-amber-500/20 border border-amber-500/50 rounded-xl p-2 text-center text-amber-300 text-[10px] font-black uppercase tracking-wider">
-              ⚡ Терминальный шаг: ставка упирается в потолок стола (1 000 000 ₽) для максимального съёма профита
+              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Глобально</div>
+                  <div className="text-gray-300 font-bold">
+                    К {Math.round(globalSkew.red)}% / Ч {Math.round(globalSkew.black)}%
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Локально (15)</div>
+                  <div className="text-gray-300 font-bold">
+                    К {Math.round(localSkew.red)}% / Ч {Math.round(localSkew.black)}%
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Альфа-Цвет</div>
+                  <div className={`font-bold ${apexMatrix.alpha === 'RED' ? 'text-red-500' : apexMatrix.alpha === 'BLACK' ? 'text-gray-300' : 'text-gray-500'}`}>
+                    {apexMatrix.alpha === 'RED' ? 'КРАСНОЕ' : apexMatrix.alpha === 'BLACK' ? 'ЧЁРНОЕ' : 'НЕТ'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Макс. Серии (20)</div>
+                  <div className="text-gray-300 font-bold">
+                    К: {apexMatrix.maxStreakRed} / Ч: {apexMatrix.maxStreakBlack}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Распределение</div>
+                  <div className="flex gap-1.5 font-bold">
+                    <span className="text-red-500">{detailedStats.redCount} ({detailedStats.redPct}%)</span>
+                    <span className="text-gray-400">{detailedStats.blackCount} ({detailedStats.blackPct}%)</span>
+                    <span className="text-emerald-500">{detailedStats.zeroCount} ({detailedStats.zeroPct}%)</span>
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Текущая Серия</div>
+                  <div className="text-white font-bold">
+                    {detailedStats.currentStreakColor === 'RED' ? 'Красное' : detailedStats.currentStreakColor === 'BLACK' ? 'Чёрное' : detailedStats.currentStreakColor === 'ZERO' ? 'Зеро' : '-'} : {detailedStats.currentStreakLength}
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
-        </div>
 
-        {/* History Rail */}
-        <div className="space-y-1.5">
-          <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">История спинов (последние 30)</div>
-          <div className="flex gap-2 overflow-x-auto py-1 scrollbar-hide">
-            {history.slice(-30).map(h => (
-              <HistoryIcon key={h.id} outcome={h.outcome} />
-            ))}
+            {/* Deep Stats (Streak Avg, Zebra %, Zero Frequency) */}
+            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4">
+              <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold mb-3">Глубокая Статистика</div>
+              <div className="grid grid-cols-3 gap-2 text-center font-mono">
+                <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Ср. длина серии</div>
+                  <div className="text-white font-bold text-sm">{detailedStats.avgStreakLength}</div>
+                </div>
+                <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Коэф. Зебры</div>
+                  <div className="text-emerald-400 font-bold text-sm">{detailedStats.zebraRatio}%</div>
+                </div>
+                <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
+                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Частота Зеро</div>
+                  <div className="text-yellow-400 font-bold text-sm">{detailedStats.avgZeroFrequency}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* History Rail */}
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">История спинов (последние 30)</div>
+              <div className="flex gap-2 overflow-x-auto py-1 scrollbar-hide">
+                {history.slice(-30).map(h => (
+                  <HistoryIcon key={h.id} outcome={h.outcome} />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </main>
@@ -1192,6 +1219,87 @@ export default function MatreshkaQuantum() {
                 </button>
               </div>
             </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* Floating Mini-HUD / Picture-in-Picture (Overlay for Gaming on PC / Mobile) */}
+      <AnimatePresence>
+        {isFloatingMode && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9, y: 30 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 30 }}
+            className="fixed bottom-4 right-4 z-50 w-80 sm:w-96 bg-black/95 border-2 border-emerald-500 rounded-3xl p-4 shadow-[0_0_50px_rgba(0,0,0,0.95)] backdrop-blur-2xl transition-all"
+          >
+            <div className="flex justify-between items-center pb-2 border-b border-gray-800 mb-2.5">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">AGY MINI-HUD</span>
+                <span className={`text-[10px] font-mono font-bold ml-1.5 ${profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {profit >= 0 ? '+' : ''}{Math.round(profit).toLocaleString('ru-RU')} ₽
+                </span>
+              </div>
+              <button
+                onClick={() => setIsFloatingMode(false)}
+                className="text-gray-400 hover:text-white p-1 hover:bg-gray-800 rounded-lg transition-colors cursor-pointer"
+                title="Закрыть плавающий оверлей"
+              >
+                <Maximize2 size={15} />
+              </button>
+            </div>
+
+            {/* Recommendation & Bet */}
+            <div className="text-center py-2.5 bg-gray-950/80 rounded-2xl border border-gray-800 mb-3 shadow-inner">
+              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                {prediction.state} • {prediction.confidence}% • X: {engineParams.growthFactor.toFixed(3)}x
+              </div>
+              <div className={`text-4xl sm:text-5xl font-black tracking-tight my-1 ${
+                recommendation === 'RED' ? 'text-red-500' :
+                recommendation === 'BLACK' ? 'text-white' : 'text-emerald-400'
+              }`}>
+                {recommendationText}
+              </div>
+              <div className="text-2xl font-mono font-black text-emerald-400">
+                {Math.round(effectiveBet).toLocaleString('ru-RU')} ₽
+              </div>
+              <div className="text-[10px] font-mono text-gray-400 mt-0.5">
+                Шаг {currentStep} / {engineParams.stepsToLimit} • {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до 1М
+              </div>
+            </div>
+
+            {/* Quick Input Buttons */}
+            <div className="grid grid-cols-3 gap-2 mb-2">
+              <button
+                onClick={() => handleOutcome('RED')}
+                className="bg-red-600 hover:bg-red-500 py-3 rounded-xl font-black text-sm text-white shadow-[0_0_15px_rgba(220,38,38,0.4)] flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
+              >
+                <span>КРАСНОЕ</span>
+                <span className="text-[9px] text-red-200 font-mono">[1]</span>
+              </button>
+              <button
+                onClick={() => handleOutcome('ZERO')}
+                className="bg-emerald-600 hover:bg-emerald-500 py-3 rounded-xl font-black text-sm text-white shadow-[0_0_15px_rgba(16,185,129,0.4)] flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
+              >
+                <span>ЗЕРО</span>
+                <span className="text-[9px] text-emerald-200 font-mono">[0]</span>
+              </button>
+              <button
+                onClick={() => handleOutcome('BLACK')}
+                className="bg-gray-900 hover:bg-gray-800 border border-gray-700 py-3 rounded-xl font-black text-sm text-white shadow-[0_0_15px_rgba(0,0,0,0.6)] flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
+              >
+                <span>ЧЁРНОЕ</span>
+                <span className="text-[9px] text-gray-400 font-mono">[2]</span>
+              </button>
+            </div>
+
+            {/* Mini Undo */}
+            <button
+              onClick={handleUndo}
+              disabled={history.length === 0}
+              className="w-full py-1.5 rounded-lg border border-gray-800 text-[10px] text-gray-400 hover:text-white uppercase tracking-widest font-bold flex items-center justify-center gap-1.5 disabled:opacity-40 cursor-pointer"
+            >
+              <Undo2 size={12} /> Отмена [Backspace]
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
