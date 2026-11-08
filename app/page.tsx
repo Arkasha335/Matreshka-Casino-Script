@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info, Download, Sliders, Zap, Shield, Sparkles, Minimize2, Maximize2, Monitor, Layers } from 'lucide-react';
+import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info, Download, Sliders, Zap, Shield, Sparkles } from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -23,7 +23,8 @@ import {
   SessionLogEntry,
   PrngDetector,
   RiskGuard,
-  BankrollManager
+  BankrollManager,
+  GAME_RULES
 } from '../lib/engine';
 
 ChartJS.register(
@@ -117,7 +118,6 @@ export default function MatreshkaQuantum() {
   const [showSummary, setShowSummary] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
-  const [isFloatingMode, setIsFloatingMode] = useState(false);
 
   // Interval timer
   useEffect(() => {
@@ -256,8 +256,8 @@ export default function MatreshkaQuantum() {
       nextStep = currentStep + 1; // Zero increments step
     } else if (recommendation === outcome) {
       isWin = true;
-      netProfit = effectiveBet * 0.98; // 2% casino tax
-      nextCdt = Math.max(0, nextCdt - netProfit);
+      netProfit = Math.round(effectiveBet * GAME_RULES.WIN_NET_RATIO); // 2% casino tax
+      nextCdt = Math.max(0, Math.round(nextCdt - netProfit));
       if (nextCdt < 10) nextCdt = 0;
 
       if (nextCdt === 0) {
@@ -311,7 +311,7 @@ export default function MatreshkaQuantum() {
       recommended_action: recommendation,
       current_bet: effectiveBet,
       current_step: currentStep,
-      current_balance: currentBankroll + netProfit,
+      current_balance: Math.round(currentBankroll + netProfit),
       server_state_detected: prediction.state,
       time_since_last_spin: timeSinceLast,
       current_mode: currentMode,
@@ -377,7 +377,7 @@ export default function MatreshkaQuantum() {
         cdtVal += entry.betAmount;
         step++;
       } else if (isWin) {
-        cdtVal = Math.max(0, cdtVal - (entry.betAmount * 0.98));
+        cdtVal = Math.max(0, Math.round(cdtVal - Math.round(entry.betAmount * GAME_RULES.WIN_NET_RATIO)));
         if (cdtVal < 10) cdtVal = 0;
         if (cdtVal === 0) {
           step = 1;
@@ -539,9 +539,12 @@ export default function MatreshkaQuantum() {
           <div className="flex items-center justify-center gap-2 mb-2">
             <Sparkles className="text-emerald-400" size={20} />
             <h1 className="text-xl font-black text-white tracking-widest uppercase">MATRESHKA QUANTUM</h1>
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.0 APEX</span>
+            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.3 QUANTUM APEX</span>
           </div>
-          <p className="text-gray-400 text-center text-xs mb-6">Калиброванное квантовое ядро: 10 шагов запаса и 100% возврат баланса</p>
+          <p className="text-gray-400 text-center text-xs mb-3">Калиброванное ядро: 50 слотов, 2 Зеро (4%), комиссия 2%, лимит 1 000 000 ₽</p>
+          <div className="bg-black/40 border border-gray-800 rounded-xl p-2.5 mb-5 text-[11px] text-gray-400 text-center font-mono">
+            Мин. ставка: <span className="text-white font-bold">1 000 ₽</span> • Потолок: <span className="text-emerald-400 font-bold">1 000 000 ₽</span> • 10 шагов прочности
+          </div>
 
           <div className="space-y-5">
             <div>
@@ -638,7 +641,7 @@ export default function MatreshkaQuantum() {
               disabled={!setupVal || Number(setupVal) <= 0}
               className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-black py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_0_25px_rgba(16,185,129,0.3)] text-sm cursor-pointer"
             >
-              Запустить Движок v12
+              Запустить Движок v12.3 APEX
             </button>
 
             {savedSessions.length > 0 && (
@@ -675,7 +678,7 @@ export default function MatreshkaQuantum() {
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12</h1>
+              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12.3 APEX</h1>
               <span className="text-[10px] font-mono text-gray-400 bg-gray-900 border border-gray-800 px-1.5 py-0.5 rounded">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
@@ -691,17 +694,6 @@ export default function MatreshkaQuantum() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsFloatingMode(!isFloatingMode)}
-              className={`p-2.5 rounded-xl border transition-all ${
-                isFloatingMode
-                  ? 'bg-emerald-600 border-emerald-500 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]'
-                  : 'text-gray-400 hover:text-white bg-gray-900 border-gray-800'
-              }`}
-              title={isFloatingMode ? 'Закрыть плавающий оверлей' : 'Включить плавающий оверлей / мини-окно поверх игры'}
-            >
-              <Layers size={18} />
-            </button>
             <button
               onClick={() => setShowProfileModal(true)}
               className="text-gray-400 hover:text-white transition-colors p-2.5 bg-gray-900 rounded-xl border border-gray-800"
@@ -719,6 +711,27 @@ export default function MatreshkaQuantum() {
           </div>
         </div>
       </header>
+
+      {/* Game Rules & Casino Table Context Strip */}
+      <div className="bg-gray-950/80 border-b border-gray-800/80 py-1.5 px-4">
+        <div className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-gray-400">
+          <div className="flex items-center gap-2">
+            <span className="text-emerald-400 font-bold">50 СЛОТОВ:</span>
+            <span>24 Красных (48%)</span>
+            <span className="text-gray-600">•</span>
+            <span>24 Чёрных (48%)</span>
+            <span className="text-gray-600">•</span>
+            <span className="text-emerald-400 font-bold">2 Зеро (4.0%)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span>Мин: <strong className="text-white">1 000 ₽</strong></span>
+            <span className="text-gray-600">•</span>
+            <span>Лимит: <strong className="text-amber-400">1 000 000 ₽</strong></span>
+            <span className="text-gray-600">•</span>
+            <span>Комиссия: <strong className="text-gray-300">2%</strong></span>
+          </div>
+        </div>
+      </div>
 
       <main className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto p-4 space-y-4">
         <div className="md:grid md:grid-cols-2 md:gap-6 lg:gap-8 items-start space-y-4 md:space-y-0">
@@ -748,9 +761,9 @@ export default function MatreshkaQuantum() {
                 currentMode === 'TRANSITION' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40' :
                 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
               }`}>
-                {currentMode === 'DANGER' ? '🔴 DANGER MODE' :
-                 currentMode === 'TRANSITION' ? (spinsSinceDangerExit < 5 ? `🟡 COOLDOWN (${5 - spinsSinceDangerExit})` : '🟡 TRANSITION') :
-                 '🟢 ZEBRA MODE'}
+                {currentMode === 'DANGER' ? '🔴 DANGER (МОНО-СЕРИИ 5+ / ZERO)' :
+                 currentMode === 'TRANSITION' ? '🟡 ПЕРЕХОДНЫЙ (СЕРИИ 3-4)' :
+                 '🟢 ЧЕРЕДОВАНИЕ (ZEBRA)'}
               </span>
             </div>
           </div>
@@ -760,6 +773,13 @@ export default function MatreshkaQuantum() {
             <span>{prediction.state}</span>
             <span className="text-gray-600">•</span>
             <span className="text-emerald-400 font-mono">{prediction.confidence}% уверенность</span>
+          </div>
+
+          {/* Mode Strategy Hint */}
+          <div className="text-[10px] font-medium text-gray-400 text-center mb-1">
+            {currentMode === 'ZEBRA' && '✨ Высокий винрейт 1-го шага • Полная прочность 10 шагов'}
+            {currentMode === 'TRANSITION' && '⚡ Переходная зона (серии 3-4) • Мин. база 1 000 ₽ • Готовность к зебре'}
+            {currentMode === 'DANGER' && '🛡️ Аномалии сервера / Zero спам • Альфа-тренд • Защита банка'}
           </div>
 
           {/* Dynamic Constant Multiplier Badge */}
@@ -1219,87 +1239,6 @@ export default function MatreshkaQuantum() {
                 </button>
               </div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {/* Floating Mini-HUD / Picture-in-Picture (Overlay for Gaming on PC / Mobile) */}
-      <AnimatePresence>
-        {isFloatingMode && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9, y: 30 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 30 }}
-            className="fixed bottom-4 right-4 z-50 w-80 sm:w-96 bg-black/95 border-2 border-emerald-500 rounded-3xl p-4 shadow-[0_0_50px_rgba(0,0,0,0.95)] backdrop-blur-2xl transition-all"
-          >
-            <div className="flex justify-between items-center pb-2 border-b border-gray-800 mb-2.5">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">AGY MINI-HUD</span>
-                <span className={`text-[10px] font-mono font-bold ml-1.5 ${profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {profit >= 0 ? '+' : ''}{Math.round(profit).toLocaleString('ru-RU')} ₽
-                </span>
-              </div>
-              <button
-                onClick={() => setIsFloatingMode(false)}
-                className="text-gray-400 hover:text-white p-1 hover:bg-gray-800 rounded-lg transition-colors cursor-pointer"
-                title="Закрыть плавающий оверлей"
-              >
-                <Maximize2 size={15} />
-              </button>
-            </div>
-
-            {/* Recommendation & Bet */}
-            <div className="text-center py-2.5 bg-gray-950/80 rounded-2xl border border-gray-800 mb-3 shadow-inner">
-              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                {prediction.state} • {prediction.confidence}% • X: {engineParams.growthFactor.toFixed(3)}x
-              </div>
-              <div className={`text-4xl sm:text-5xl font-black tracking-tight my-1 ${
-                recommendation === 'RED' ? 'text-red-500' :
-                recommendation === 'BLACK' ? 'text-white' : 'text-emerald-400'
-              }`}>
-                {recommendationText}
-              </div>
-              <div className="text-2xl font-mono font-black text-emerald-400">
-                {Math.round(effectiveBet).toLocaleString('ru-RU')} ₽
-              </div>
-              <div className="text-[10px] font-mono text-gray-400 mt-0.5">
-                Шаг {currentStep} / {engineParams.stepsToLimit} • {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до 1М
-              </div>
-            </div>
-
-            {/* Quick Input Buttons */}
-            <div className="grid grid-cols-3 gap-2 mb-2">
-              <button
-                onClick={() => handleOutcome('RED')}
-                className="bg-red-600 hover:bg-red-500 py-3 rounded-xl font-black text-sm text-white shadow-[0_0_15px_rgba(220,38,38,0.4)] flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
-              >
-                <span>КРАСНОЕ</span>
-                <span className="text-[9px] text-red-200 font-mono">[1]</span>
-              </button>
-              <button
-                onClick={() => handleOutcome('ZERO')}
-                className="bg-emerald-600 hover:bg-emerald-500 py-3 rounded-xl font-black text-sm text-white shadow-[0_0_15px_rgba(16,185,129,0.4)] flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
-              >
-                <span>ЗЕРО</span>
-                <span className="text-[9px] text-emerald-200 font-mono">[0]</span>
-              </button>
-              <button
-                onClick={() => handleOutcome('BLACK')}
-                className="bg-gray-900 hover:bg-gray-800 border border-gray-700 py-3 rounded-xl font-black text-sm text-white shadow-[0_0_15px_rgba(0,0,0,0.6)] flex flex-col items-center justify-center active:scale-95 transition-all cursor-pointer"
-              >
-                <span>ЧЁРНОЕ</span>
-                <span className="text-[9px] text-gray-400 font-mono">[2]</span>
-              </button>
-            </div>
-
-            {/* Mini Undo */}
-            <button
-              onClick={handleUndo}
-              disabled={history.length === 0}
-              className="w-full py-1.5 rounded-lg border border-gray-800 text-[10px] text-gray-400 hover:text-white uppercase tracking-widest font-bold flex items-center justify-center gap-1.5 disabled:opacity-40 cursor-pointer"
-            >
-              <Undo2 size={12} /> Отмена [Backspace]
-            </button>
           </motion.div>
         )}
       </AnimatePresence>
