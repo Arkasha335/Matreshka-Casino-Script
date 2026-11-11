@@ -11,6 +11,7 @@ export const GAME_RULES = {
   ZERO_SLOTS: 2,
   MIN_BET: 1000,
   MAX_BET: 1000000,
+  VIP_MAX_BET: 2000000,
   TAX_RATE: 0.02, // 2% commission on net win
   WIN_NET_RATIO: 0.98, // Net profit multiplier (bet * 0.98)
   EXPECTED_ZERO_INTERVAL: 25, // 50 / 2 = 25 spins
@@ -71,6 +72,8 @@ export interface EngineParams {
   sniperMult: number;
   stepsToLimit: number;
   durabilitySteps: number;
+  tableLimit: number;
+  projectedTerminalBet?: number;
 }
 
 export interface PredictionResult {

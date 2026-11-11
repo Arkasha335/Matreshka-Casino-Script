@@ -192,6 +192,16 @@ export class PrngDetector {
   }
 
   /**
+   * Fast mode detection without post-DANGER cooldown penalty (NO_COOLDOWN).
+   * Returns instantaneous raw mode, demoting ZEBRA to TRANSITION only under heavy ZERO cluster (>= 3 ZERO in last 10).
+   */
+  public static detectModeFast(history: HistoryEntry[]): ServerMode {
+    const rawMode = this.detectMode(history);
+    const zeroCount10 = history.slice(-10).filter(h => h.outcome === 'ZERO').length;
+    return (zeroCount10 >= 3 && rawMode === 'ZEBRA') ? 'TRANSITION' : rawMode;
+  }
+
+  /**
    * Hysteresis filter to stabilize server mode switching and prevent whipsaws.
    */
   public static detectModeWithHysteresis(
