@@ -34,6 +34,49 @@ def calc_net_win(bet):
 def geom_sum_factor(n, x=2.025):
     return (math.pow(x, n) - 1.0) / (x - 1.0)
 
+def predict_v13(hist, window=15, min_cmax=3):
+    if not hist: return 'RED'
+    nz = [h for h in hist if h != 'ZERO']
+    win_nz = nz[-window:]
+    rc = win_nz.count('RED'); bc = len(win_nz) - rc
+    ms_r = ms_b = cur = 0; col = None
+    for h in win_nz:
+        cur = cur + 1 if h == col else 1; col = h
+        if col == 'RED': ms_r = max(ms_r, cur)
+        else: ms_b = max(ms_b, cur)
+    alpha = 'RED' if win_nz and rc / len(win_nz) > 0.55 else ('BLACK' if win_nz and bc / len(win_nz) > 0.55 else 'NEUTRAL')
+    omega = 'BLACK' if alpha == 'RED' else ('RED' if alpha == 'BLACK' else 'NEUTRAL')
+    cac = nz[-1] if nz else None
+    cas = 0
+    for h in reversed(nz):
+        if h == cac: cas += 1
+        else: break
+    if len(nz) >= 4:
+        L1, L2, L3, L4 = nz[-1], nz[-2], nz[-3], nz[-4]
+        if L1 == L3 and L2 == L4 and L1 != L2: return 'BLACK' if L1 == 'RED' else 'RED'
+        if L1 == L2 == L3 and L4 != L1: return 'BLACK' if L1 == 'RED' else 'RED'
+    if len(nz) < 2: return nz[-1] if nz else 'RED'
+    L1, L2 = nz[-1], nz[-2]
+    c_max = ms_r if cac == 'RED' else ms_b
+    bounce_threshold = max(min_cmax, c_max)
+    if cac and c_max > 0 and cas >= bounce_threshold:
+        rec = 'BLACK' if cac == 'RED' else 'RED'
+    elif L1 == L2:
+        if L1 == alpha and c_max > 2:
+            rec = L1
+        else:
+            rec = 'BLACK' if L1 == 'RED' else 'RED'
+    else:
+        zm = PrngDetectorMirror.get_zebra_momentum(hist)
+        rec = L1 if zm['followL1'] else ('BLACK' if L1 == 'RED' else 'RED')
+    if L1 == alpha and L2 == omega:
+        osb = 0
+        for i in range(len(nz) - 2, -1, -1):
+            if nz[i] == omega: osb += 1
+            else: break
+        if osb >= 2: rec = alpha
+    return rec
+
 def cfg_1m(profile, mode, cap):
     cap = max(10_000, cap)
     scale = max(0.15, min(TABLE_LIMIT, cap / 1.92) / 1_000_000.0)
@@ -41,7 +84,7 @@ def cfg_1m(profile, mode, cap):
         b0, n = {'ZEBRA': (1700, 10), 'TRANSITION': (1200, 10), 'DANGER': (1000, 10)}[mode]
     elif profile == "TURBO_HARVEST":
         if cap >= 3_000_000:
-            b0, n = {'ZEBRA': (9000, 7), 'TRANSITION': (5500, 8), 'DANGER': (3000, 8)}[mode]
+            b0, n = {'ZEBRA': (8500, 7), 'TRANSITION': (5000, 8), 'DANGER': (2000, 9)}[mode]
         else:
             b0, n = {'ZEBRA': (6500, 8), 'TRANSITION': (4500, 8), 'DANGER': (2500, 8)}[mode]
     else:
@@ -163,14 +206,25 @@ for (const profile of profiles) {
       let spinsInCurr = 0;
       let seqStart = 'ZEBRA';
       let seqTargetSteps = undefined;
+      let zeroInSeq = 0;
       const hist = [];
       const trace = [];
       for (const outcome of s.outcomes) {
         if (bank < GAME_RULES.MIN_BET) break;
         const cycleCap = bank + cdt;
-        const locked = cdt > 0 && BankrollManager.shouldLockZebra(profile, cycleCap, seqStart);
+        const zero10 = hist.slice(-10).filter((x) => x.outcome === 'ZERO').length;
+        const isZeroShock = profile !== 'SHIELD_CONSERVATIVE' && BankrollManager.isZeroShockActive(zero10, zeroInSeq);
+        const locked = cdt > 0 && BankrollManager.shouldLockZebra(profile, cycleCap, seqStart, isZeroShock);
         const effMode = locked ? 'ZEBRA' : mode;
-        const params = BankrollManager.getEngineParams(profile, effMode, bank, cdt, cdt > 0 ? seqTargetSteps : undefined);
+        const params = BankrollManager.getEngineParams(
+          profile,
+          effMode,
+          bank,
+          cdt,
+          cdt > 0 ? seqTargetSteps : undefined,
+          isZeroShock,
+          step
+        );
         const bet = BankrollManager.calculateBet(cdt, step, effMode, params, bank, prevBet);
         const pred = PrngDetector.getRecommendationAndConfidence(hist).recommendation;
         const wasAtStart = cdt === 0 || step === 1;
@@ -179,22 +233,25 @@ for (const profile of profiles) {
 
         let isWin = false;
         let netProfit = 0;
+        let nextZeroInSeq = zeroInSeq;
         if (outcome === 'ZERO') {
           isWin = false;
           netProfit = -bet;
           cdt += bet;
           step += 1;
+          nextZeroInSeq += 1;
         } else if (outcome === pred) {
           isWin = true;
           netProfit = BankrollManager.calcNetWin(bet);
           cdt = Math.max(0, cdt - netProfit);
-          if (cdt === 0) step = 1;
+          if (cdt === 0) { step = 1; nextZeroInSeq = 0; }
         } else {
           isWin = false;
           netProfit = -bet;
           cdt += bet;
           step += 1;
         }
+        zeroInSeq = nextZeroInSeq;
         bank += netProfit;
         hist.push({ outcome, betAmount: bet, betColor: pred, isWin, netProfit });
 
@@ -213,9 +270,18 @@ for (const profile of profiles) {
         if (cdt === 0) {
           seqStart = mode;
           seqTargetSteps = undefined;
+          zeroInSeq = 0;
         } else if (wasAtStart) {
           seqStart = effMode;
           seqTargetSteps = BankrollManager.getCalibratedLadderConfig(profile, effMode, cycleCap).targetSteps;
+        } else {
+          const nextZero10 = hist.slice(-10).filter((x) => x.outcome === 'ZERO').length;
+          const nextZeroShock = profile !== 'SHIELD_CONSERVATIVE' && BankrollManager.isZeroShockActive(nextZero10, zeroInSeq);
+          if (nextZeroShock && step >= 2) {
+            const nextLocked = BankrollManager.shouldLockZebra(profile, bank + cdt, seqStart, true);
+            const nextModeCfg = BankrollManager.getCalibratedLadderConfig(profile, nextLocked ? 'ZEBRA' : mode, bank + cdt);
+            seqTargetSteps = Math.min(10, Math.max(seqTargetSteps ?? nextModeCfg.targetSteps, nextModeCfg.targetSteps));
+          }
         }
         prevBet = bet;
       }
@@ -241,28 +307,36 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
         for s_name, outs in sessions:
             bank = init_bank; step = 1; cdt = 0; prev_bet = None
             mode = "ZEBRA"; prev_mode = "ZEBRA"; sde = 999; sim = 0
-            seq_start = "ZEBRA"; seq_n = None
+            seq_start = "ZEBRA"; seq_n = None; zero_in_seq = 0
             hist = []; py_trace = []
             for outcome in outs:
                 if bank < 1000: break
                 cycle_cap = bank + cdt
-                locked = cdt > 0 and is_fast and cycle_cap >= 3_000_000 and seq_start == "ZEBRA"
+                zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
+                is_zero_shock = is_fast and (zero10 >= 2 or zero_in_seq >= 2)
+                locked = cdt > 0 and is_fast and (not is_zero_shock) and cycle_cap >= 3_000_000 and seq_start == "ZEBRA"
                 eff_mode = "ZEBRA" if locked else mode
                 b0, mode_n = cfg_1m(profile, eff_mode, cycle_cap)
-                eff_n = min(mode_n, seq_n) if (cdt > 0 and seq_n is not None) else mode_n
+                if cdt > 0 and seq_n is not None:
+                    if is_zero_shock and step >= 2:
+                        eff_n = min(10, max(seq_n, mode_n), mode_n)
+                    else:
+                        eff_n = min(mode_n, seq_n)
+                else:
+                    eff_n = mode_n
                 bet = exact_bet_1m(cdt, step, b0, eff_n, bank, prev_bet)
                 if bet < 1000 or bet > TABLE_LIMIT or bet > bank:
                     inv_failures += 1
-                pred = PrngDetectorMirror.get_recommendation_and_confidence(hist)[0]
+                pred = predict_v13(hist, window=15, min_cmax=3)
                 was_at_start = (cdt == 0 or step == 1)
                 py_trace.append([bet, eff_mode, step, eff_n, b0])
 
                 if outcome == "ZERO":
-                    net = -bet; cdt += bet; step += 1
+                    net = -bet; cdt += bet; step += 1; zero_in_seq += 1
                 elif outcome == pred:
                     net = calc_net_win(bet)
                     cdt = max(0, cdt - net)
-                    if cdt == 0: step = 1
+                    if cdt == 0: step = 1; zero_in_seq = 0
                 else:
                     net = -bet; cdt += bet; step += 1
                 bank += net
@@ -270,8 +344,8 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
 
                 if is_fast:
                     raw_m = PrngDetectorMirror.detect_mode(hist)
-                    zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
-                    nm = "TRANSITION" if (zero10 >= 3 and raw_m == "ZEBRA") else raw_m
+                    zero10_next = sum(1 for x in hist[-10:] if x == "ZERO")
+                    nm = "TRANSITION" if (zero10_next >= 3 and raw_m == "ZEBRA") else raw_m
                     prev_mode = mode if nm != mode else prev_mode
                     sim = 1 if nm != mode else sim + 1
                     mode = nm; sde = 999
@@ -279,10 +353,17 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                     mode, prev_mode, sde, sim = PrngDetectorMirror.detect_mode_with_hysteresis(hist, prev_mode, mode, sde, sim)
 
                 if cdt == 0:
-                    seq_start = mode; seq_n = None
+                    seq_start = mode; seq_n = None; zero_in_seq = 0
                 elif was_at_start:
                     seq_start = eff_mode
                     seq_n = cfg_1m(profile, eff_mode, cycle_cap)[1]
+                else:
+                    next_zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
+                    next_zero_shock = is_fast and (next_zero10 >= 2 or zero_in_seq >= 2)
+                    if next_zero_shock and step >= 2:
+                        next_locked = is_fast and (not True) and (bank + cdt >= 3_000_000) and seq_start == "ZEBRA"
+                        next_mode_n = cfg_1m(profile, "ZEBRA" if next_locked else mode, bank + cdt)[1]
+                        seq_n = min(10, max(seq_n if seq_n is not None else next_mode_n, next_mode_n))
                 prev_bet = bet
 
             key = f"{profile}|{init_bank}|{s_name}"
@@ -293,6 +374,6 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 if mismatches <= 3:
                     print("MISMATCH:", key, "PY_BANK=", bank, "TS_BANK=", ts_rec["bank"])
 
-print(f"PARITY CHECK v12.5.1 (1M STRICT + FLOOR PAYOUT): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
+print(f"PARITY CHECK v13.0 (W=15 + MIN_CMAX=3 + ZERO_SHOCK + TURBO 7/8/9): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
 if mismatches > 0 or inv_failures > 0:
     sys.exit(1)

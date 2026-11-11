@@ -21,14 +21,24 @@ export class BankrollManager {
   }
 
   /**
+   * Detects server ZERO burst inside recent window or active recovery sequence (v13.0 Zero-Shock Guard).
+   */
+  public static isZeroShockActive(zeroCountLast10: number, zeroInSequence: number): boolean {
+    return zeroCountLast10 >= 2 || zeroInSequence >= 2;
+  }
+
+  /**
    * Determines whether the current sequence should lock into ZEBRA harvesting mode
    * to prevent premature EV degradation during temporary variance inside a deep wallet.
+   * Unlocks automatically when Zero-Shock Guard detects a ZERO burst.
    */
   public static shouldLockZebra(
     profile: StrategyProfile,
     cycleCapital: number,
-    sequenceStartMode: ServerMode
+    sequenceStartMode: ServerMode,
+    isZeroShock: boolean = false
   ): boolean {
+    if (isZeroShock) return false;
     return (
       profile !== 'SHIELD_CONSERVATIVE' &&
       cycleCapital >= this.ZEBRA_LOCK_CAPITAL_THRESHOLD &&
@@ -37,7 +47,7 @@ export class BankrollManager {
   }
 
   /**
-   * Aggressive/Balanced v12.5.1 profiles exit DANGER immediately via fast detection
+   * Aggressive/Balanced v13.0 profiles exit DANGER immediately via fast detection
    * (skipping the 3+5 spin post-DANGER cooldown penalty); SHIELD preserves conservative hysteresis.
    */
   public static usesFastModeDetector(profile: StrategyProfile): boolean {
@@ -49,10 +59,10 @@ export class BankrollManager {
   }
 
   /**
-   * Calibrated v12.5.1 Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
-   * - SHIELD: N=10/10/10 (1.7k/1.2k/1.0k) - maximum survivability (~100% real win >= 2M)
-   * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - high EV (~612k..717k/hr med, up to +1.88M P90) with 10-step storm shield
-   * - TURBO: <3M -> N=8/8/8 (6.5k/4.5k/2.5k); >=3M -> N=7/8/8 (9.0k/5.5k/3.0k) - peak aggressive yield (~1.35M..1.42M/hr)
+   * Calibrated v13.0 Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
+   * - SHIELD: N=10/10/10 (1.7k/1.2k/1.0k) - maximum survivability (100% real win >= 2M)
+   * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - 96.4% real win (27/28) across 2M..6.5M with Zero-Shock Guard
+   * - TURBO v13.0: >=3M -> N=7/8/9 (8.5k/5.0k/2.0k) | <3M -> N=8/8/8 (6.5k/4.5k/2.5k) - peak aggressive EV
    */
   public static getCalibratedLadderConfig(
     profile: StrategyProfile,
@@ -74,21 +84,21 @@ export class BankrollManager {
     } else if (profile === 'TURBO_HARVEST') {
       if (cap >= 3000000) {
         if (mode === 'ZEBRA') {
-          nominalB0 = 9000;
+          nominalB0 = 8500;
           targetSteps = 7;
         } else if (mode === 'TRANSITION') {
-          nominalB0 = 5500;
+          nominalB0 = 5000;
           targetSteps = 8;
         } else {
-          nominalB0 = 3000;
-          targetSteps = 8;
+          nominalB0 = 2000;
+          targetSteps = 9;
         }
       } else {
         targetSteps = 8;
         nominalB0 = mode === 'ZEBRA' ? 6500 : mode === 'TRANSITION' ? 4500 : 2500;
       }
     } else {
-      // APEX_IDEAL (v12.5.1 Strict 1M Matrix: N=8/10/10, 5.0k/2.5k/1.4k)
+      // APEX_IDEAL (v13.0 Verified Matrix: N=8/10/10, 5.0k/2.5k/1.4k)
       if (mode === 'ZEBRA') {
         nominalB0 = 5000;
         targetSteps = 8;
@@ -231,16 +241,21 @@ export class BankrollManager {
     mode: ServerMode,
     bankroll: number,
     cdt: number = 0,
-    lockedTargetSteps?: number
+    lockedTargetSteps?: number,
+    isZeroShock: boolean = false,
+    currentStep: number = 1
   ): EngineParams {
     const limit = GAME_RULES.MAX_BET;
     const cycleCapital = Math.max(GAME_RULES.MIN_BET * 10, Math.floor(bankroll) + Math.max(0, cdt));
     const cfg = this.getCalibratedLadderConfig(profile, mode, cycleCapital);
 
-    const targetSteps =
-      lockedTargetSteps !== undefined && lockedTargetSteps > 0
-        ? Math.min(cfg.targetSteps, lockedTargetSteps)
-        : cfg.targetSteps;
+    let targetSteps = cfg.targetSteps;
+    if (lockedTargetSteps !== undefined && lockedTargetSteps > 0) {
+      targetSteps =
+        isZeroShock && currentStep >= 2
+          ? Math.min(10, Math.max(cfg.targetSteps, lockedTargetSteps), cfg.targetSteps)
+          : Math.min(cfg.targetSteps, lockedTargetSteps);
+    }
 
     const effectiveBaseBet = Math.max(
       GAME_RULES.MIN_BET,

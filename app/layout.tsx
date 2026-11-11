@@ -1,10 +1,16 @@
 import type { Metadata } from 'next';
-import { Inter, JetBrains_Mono } from 'next/font/google';
+import { Manrope, Space_Grotesk, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 
-const inter = Inter({
+const manrope = Manrope({
   subsets: ['latin', 'cyrillic'],
   variable: '--font-sans',
+  display: 'swap',
+});
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ['latin'],
+  variable: '--font-display',
   display: 'swap',
 });
 
@@ -15,14 +21,14 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Matreshka Quantum v12.5.1 — Tactical Terminal',
-  description: 'Квантовый тактический терминал управления банкроллом Matreshka Quantum v12.5.1',
+  title: 'Matreshka Quantum v13.0 — Obsidian Terminal',
+  description: 'Квантовый тактический терминал управления банкроллом Matreshka Quantum v13.0',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" className={`${inter.variable} ${jetbrainsMono.variable}`}>
-      <body className="bg-[#07090E] text-slate-100 antialiased" suppressHydrationWarning>
+    <html lang="ru" className={`${manrope.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable}`}>
+      <body className="bg-[#030304] text-neutral-100 antialiased" suppressHydrationWarning>
         {children}
       </body>
     </html>

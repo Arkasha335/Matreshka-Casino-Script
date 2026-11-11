@@ -51,8 +51,9 @@ export class PrngDetector {
 
   /**
    * Calculate Apex Matrix for Alpha/Omega, streak maximums and active streaks.
+   * Synchronized with 15-spin rolling local window (v13.0).
    */
-  public static getApexMatrix(history: HistoryEntry[], window: number = 20): ApexMatrix {
+  public static getApexMatrix(history: HistoryEntry[], window: number = 15): ApexMatrix {
     const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
 
     let redCount = 0;
@@ -314,8 +315,9 @@ export class PrngDetector {
     const L2 = nonZero[nonZero.length - 2].outcome;
 
     const currentMaxStreak = matrix.currentActiveColor === 'RED' ? matrix.maxStreakRed : matrix.maxStreakBlack;
+    const bounceThreshold = Math.max(3, currentMaxStreak);
 
-    if (matrix.currentActiveColor && matrix.currentActiveStreak >= currentMaxStreak && currentMaxStreak > 0) {
+    if (matrix.currentActiveColor && currentMaxStreak > 0 && matrix.currentActiveStreak >= bounceThreshold) {
       recommendation = matrix.currentActiveColor === 'RED' ? 'BLACK' : 'RED';
       confidence = 90;
       state = 'ОТСКОК ОТ ПОТОЛКА';
