@@ -28,8 +28,8 @@ def load_clean():
             seen.add(h); res.append((fn, outs))
     return res
 
-def floor_win(bet):
-    return (int(bet) * 98) // 100
+def calc_net_win(bet):
+    return ((int(bet) * 98) + 50) // 100
 
 def geom_sum_factor(n, x=2.025):
     return (math.pow(x, n) - 1.0) / (x - 1.0)
@@ -93,7 +93,7 @@ def exact_bet_1m(cdt, step, base_bet, target_steps, bankroll, prev_bet):
     if cdt <= 0 or step <= 1: return base_bet
     rem = max(1, target_steps - step + 1)
     min_tbb = math.ceil(((cdt + base_bet) * 100) / 98.0)
-    while floor_win(min_tbb) < cdt + base_bet:
+    while calc_net_win(min_tbb) < cdt + base_bet:
         min_tbb += 1
     pb = int(prev_bet) if (prev_bet is not None and prev_bet > 0) else base_bet
     if rem == 1:
@@ -103,11 +103,11 @@ def exact_bet_1m(cdt, step, base_bet, target_steps, bankroll, prev_bet):
     opt_x = solve_exact_budget_x(pb, rem, int_w)
     bet = max(min_tbb, js_round(pb * opt_x))
     if rem == 2:
-        max_pen_t = floor_win(TABLE_LIMIT) - cdt - 100
+        max_pen_t = calc_net_win(TABLE_LIMIT) - cdt - 100
         max_pen_w = math.floor((0.98 * int_w - cdt - 100) / 1.98)
         max_safe = min(max_pen_t, max_pen_w)
         min_be = math.ceil(((cdt + 100) * 100) / 98.0)
-        while floor_win(min_be) < cdt + 100:
+        while calc_net_win(min_be) < cdt + 100:
             min_be += 1
         if max_safe >= min_be:
             bet = min(bet, max_safe)
@@ -260,7 +260,7 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 if outcome == "ZERO":
                     net = -bet; cdt += bet; step += 1
                 elif outcome == pred:
-                    net = floor_win(bet)
+                    net = calc_net_win(bet)
                     cdt = max(0, cdt - net)
                     if cdt == 0: step = 1
                 else:

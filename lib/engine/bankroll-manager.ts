@@ -12,12 +12,12 @@ export class BankrollManager {
   private static readonly ZEBRA_LOCK_CAPITAL_THRESHOLD = 3000000;
 
   /**
-   * Exact casino payout rounding: Matreshka server floors net profit down (equivalently rounds 2% fee up).
-   * Using integer multiplication before division avoids IEEE-754 float drift on integer bets.
+   * Symmetric integer payout rounding under 2% commission.
+   * Avoids systematic -0.5 RUB/win floor drift (-27..-38 RUB/session observed on Nov 11 logs).
    */
   public static calcNetWin(bet: number): number {
     const intBet = Math.max(0, Math.floor(bet));
-    return Math.floor((intBet * 98) / 100);
+    return Math.round((intBet * 98) / 100);
   }
 
   /**

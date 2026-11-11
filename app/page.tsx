@@ -1,8 +1,23 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { RotateCcw, Undo2, CheckCircle2, AlertTriangle, Info, Download, Sliders, Zap, Shield, Sparkles } from 'lucide-react';
+import {
+  RotateCcw,
+  Undo2,
+  CheckCircle2,
+  AlertTriangle,
+  Download,
+  Sliders,
+  Zap,
+  Shield,
+  Sparkles,
+  Pencil,
+  Activity,
+  TrendingUp,
+  Target,
+  Flame
+} from 'lucide-react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -11,7 +26,9 @@ import {
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  Filler,
+  type ChartOptions
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
 import {
@@ -34,14 +51,16 @@ ChartJS.register(
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  Filler
 );
 
 // Audio Engine
 let audioCtx: AudioContext | null = null;
 const initAudio = () => {
   if (!audioCtx && typeof window !== 'undefined') {
-    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const AudioContextClass =
+      window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (AudioContextClass) {
       audioCtx = new AudioContextClass();
     }
@@ -70,30 +89,61 @@ const playTone = (freq: number, type: OscillatorType, duration: number, vol: num
   }
 };
 
-const playClick = () => playTone(800, 'sine', 0.1, 0.05);
-const playHapticClick = () => playTone(150, 'square', 0.05, 0.1);
-const playHum = () => playTone(60, 'sawtooth', 0.8, 0.1);
+const playClick = () => playTone(800, 'sine', 0.08, 0.04);
+const playHapticClick = () => playTone(150, 'square', 0.05, 0.08);
+const playHum = () => playTone(60, 'sawtooth', 0.65, 0.08);
 const playAlert = () => {
-  playTone(880, 'square', 0.15, 0.05);
-  setTimeout(() => playTone(1100, 'square', 0.3, 0.05), 150);
+  playTone(880, 'square', 0.14, 0.05);
+  setTimeout(() => playTone(1100, 'square', 0.25, 0.05), 140);
 };
 
-const HistoryIcon = React.memo(function HistoryIcon({ outcome }: { outcome: Outcome }) {
+const HistoryIcon = React.memo(function HistoryIcon({ entry }: { entry: HistoryEntry }) {
+  const { outcome, isWin } = entry;
   return (
-    <div
-      className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white border-2 transition-transform hover:scale-110 shadow-md
-        ${outcome === 'RED' ? 'bg-red-600 border-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]' :
-        outcome === 'BLACK' ? 'bg-gray-900 border-gray-700 shadow-[0_0_8px_rgba(0,0,0,0.6)]' :
-        'bg-emerald-600 border-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.6)]'}`}
-    >
-      {outcome === 'RED' ? 'К' : outcome === 'BLACK' ? 'Ч' : 'З'}
+    <div className="relative flex-shrink-0 group">
+      <div
+        className={`w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold font-mono text-white border transition-transform group-hover:scale-110
+          ${outcome === 'RED'
+            ? 'bg-rose-600/90 border-rose-400/70 shadow-[0_0_10px_rgba(244,63,94,0.3)]'
+            : outcome === 'BLACK'
+            ? 'bg-slate-800 border-slate-500/70 shadow-[0_0_10px_rgba(15,23,42,0.5)]'
+            : 'bg-emerald-600/90 border-emerald-400/70 shadow-[0_0_10px_rgba(16,185,129,0.35)]'
+          }`}
+        title={`${outcome === 'RED' ? 'Красное' : outcome === 'BLACK' ? 'Чёрное' : 'Зеро'} • ${entry.betAmount.toLocaleString('ru-RU')} ₽ (${isWin ? '+' : ''}${entry.netProfit.toLocaleString('ru-RU')} ₽)`}
+      >
+        {outcome === 'RED' ? 'К' : outcome === 'BLACK' ? 'Ч' : 'З'}
+      </div>
+      <span
+        className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-[#0E131D] ${
+          isWin ? 'bg-emerald-400' : 'bg-rose-500/90'
+        }`}
+      />
     </div>
   );
 });
 
+const emptySubscribe = () => () => {};
+
+const PROFILE_LABELS: Record<StrategyProfile, { title: string; badgeClass: string }> = {
+  APEX_IDEAL: {
+    title: 'APEX OPT',
+    badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35 hover:bg-emerald-500/25',
+  },
+  TURBO_HARVEST: {
+    title: 'TURBO',
+    badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/35 hover:bg-amber-500/25',
+  },
+  SHIELD_CONSERVATIVE: {
+    title: 'SHIELD',
+    badgeClass: 'bg-sky-500/15 text-sky-300 border-sky-500/35 hover:bg-sky-500/25',
+  },
+};
+
 export default function MatreshkaQuantum() {
-  const [isClient, setIsClient] = useState(false);
+  const isClient = useSyncExternalStore(emptySubscribe, () => true, () => false);
+
   const [initialBankroll, setInitialBankroll] = useState<number>(0);
+  const [balanceCorrection, setBalanceCorrection] = useState<number>(0);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [currentStep, setCurrentStep] = useState<number>(1);
   const [attackStep, setAttackStep] = useState<number>(0);
@@ -112,11 +162,13 @@ export default function MatreshkaQuantum() {
   const [sessionLogs, setSessionLogs] = useState<SessionLogEntry[]>([]);
 
   // Controls & Modals
-  const [setupVal, setSetupVal] = useState('1000000');
+  const [setupVal, setSetupVal] = useState('3500000');
   const [manualBet, setManualBet] = useState<number | null>(null);
   const [manualColor, setManualColor] = useState<Outcome | null>(null);
   const [isEditingBet, setIsEditingBet] = useState(false);
   const [editBetValue, setEditBetValue] = useState('');
+  const [isEditingBalance, setIsEditingBalance] = useState(false);
+  const [editBalanceValue, setEditBalanceValue] = useState('');
   const [showSummary, setShowSummary] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
@@ -129,12 +181,12 @@ export default function MatreshkaQuantum() {
 
   // Restore State
   useEffect(() => {
-    setIsClient(true);
     const saved = localStorage.getItem('matreshka_quantum_v12_state');
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
         if (parsed.initialBankroll) setInitialBankroll(Math.floor(parsed.initialBankroll));
+        if (parsed.balanceCorrection !== undefined) setBalanceCorrection(Math.round(parsed.balanceCorrection));
         if (parsed.history) setHistory(parsed.history);
         if (parsed.currentStep) setCurrentStep(parsed.currentStep);
         if (parsed.attackStep !== undefined) setAttackStep(parsed.attackStep);
@@ -164,6 +216,7 @@ export default function MatreshkaQuantum() {
     if (isClient && initialBankroll > 0) {
       localStorage.setItem('matreshka_quantum_v12_state', JSON.stringify({
         initialBankroll,
+        balanceCorrection,
         history,
         currentStep,
         attackStep,
@@ -181,6 +234,7 @@ export default function MatreshkaQuantum() {
   }, [
     isClient,
     initialBankroll,
+    balanceCorrection,
     history,
     currentStep,
     attackStep,
@@ -195,15 +249,16 @@ export default function MatreshkaQuantum() {
     strategyProfile
   ]);
 
-  // Derived current bankroll
-  const currentBankroll = useMemo(() => {
+  // Derived bankroll & profit
+  const rawHistoryBankroll = useMemo(() => {
     return initialBankroll + history.reduce((acc, curr) => acc + curr.netProfit, 0);
   }, [initialBankroll, history]);
 
+  const currentBankroll = rawHistoryBankroll + balanceCorrection;
   const profit = currentBankroll - initialBankroll;
   const sessionROI = initialBankroll > 0 ? (Math.trunc((profit / initialBankroll) * 10000) / 100).toFixed(2) : '0.00';
 
-  // Engine Params & Prediction
+  // Engine Params & Prediction (Core Staking & PRNG Logic preserved)
   const cycleCapital = currentBankroll + cdt;
   const isZebraLocked = cdt > 0 && BankrollManager.shouldLockZebra(strategyProfile, cycleCapital, sequenceStartMode);
   const effectiveMode: ServerMode = isZebraLocked ? 'ZEBRA' : currentMode;
@@ -235,6 +290,7 @@ export default function MatreshkaQuantum() {
   }, [cdt, currentStep, effectiveMode, engineParams, currentBankroll, prevBetAmount]);
 
   const effectiveBet = manualBet !== null ? manualBet : nextCalculatedBet;
+  const netWinIfHit = BankrollManager.calcNetWin(effectiveBet) - cdt;
 
   const prediction = useMemo(() => {
     return PrngDetector.getRecommendationAndConfidence(history);
@@ -243,28 +299,37 @@ export default function MatreshkaQuantum() {
   const recommendation = manualColor !== null ? manualColor : prediction.recommendation;
   const recommendationText = recommendation === 'RED' ? 'КРАСНОЕ' : recommendation === 'BLACK' ? 'ЧЁРНОЕ' : 'ЗЕРО';
 
-  // Stats
+  // Detailed Stats & Stream Analytics
   const detailedStats = useMemo(() => {
-    return RiskGuard.computeDetailedStats(history, initialBankroll, sessionStartTime, now);
-  }, [history, initialBankroll, sessionStartTime, now]);
+    return RiskGuard.computeDetailedStats(history, initialBankroll, sessionStartTime, now, balanceCorrection);
+  }, [history, initialBankroll, sessionStartTime, now, balanceCorrection]);
 
   const apexMatrix = useMemo(() => PrngDetector.getApexMatrix(history), [history]);
   const globalSkew = useMemo(() => PrngDetector.getGlobalSkew(history), [history]);
   const localSkew = useMemo(() => PrngDetector.getLocalSkew(history), [history]);
 
-  const nonZeroRecent = useMemo(() => history.filter(h => h.outcome !== 'ZERO').slice(-15), [history]);
-  const altRateUI = useMemo(() => {
-    if (nonZeroRecent.length < 2) return 0;
-    let alt = 0;
-    for (let i = 1; i < nonZeroRecent.length; i++) {
-      if (nonZeroRecent[i].outcome !== nonZeroRecent[i - 1].outcome) alt++;
-    }
-    return Math.round((alt / (nonZeroRecent.length - 1)) * 100);
-  }, [nonZeroRecent]);
-
-  const zeroCountLast10 = useMemo(() => {
-    return history.slice(-10).filter(h => h.outcome === 'ZERO').length;
+  // Exact dominance percentage over the 20-spin Alpha window so UI stays transparent vs local(15)
+  const alphaStrength20 = useMemo(() => {
+    const nz20 = history.filter(h => h.outcome !== 'ZERO').slice(-20);
+    if (nz20.length === 0) return { pct: 50, sample: 0 };
+    const red20 = nz20.filter(h => h.outcome === 'RED').length;
+    const domCount = Math.max(red20, nz20.length - red20);
+    return { pct: Math.round((domCount / nz20.length) * 100), sample: nz20.length };
   }, [history]);
+
+  const avgSpinPaceSec = useMemo(() => {
+    if (sessionLogs.length <= 1) return 0;
+    const slice = sessionLogs.slice(-10);
+    let totalMs = 0;
+    let cnt = 0;
+    for (let i = 1; i < slice.length; i++) {
+      if (slice[i].time_since_last_spin > 0) {
+        totalMs += slice[i].time_since_last_spin;
+        cnt++;
+      }
+    }
+    return cnt > 0 ? Math.round(totalMs / cnt / 1000) : 0;
+  }, [sessionLogs]);
 
   // Outcome Handler
   const handleOutcome = useCallback((outcome: Outcome) => {
@@ -272,6 +337,7 @@ export default function MatreshkaQuantum() {
     setManualBet(null);
     setManualColor(null);
     setIsEditingBet(false);
+    setIsEditingBalance(false);
 
     let isWin = false;
     let netProfit = 0;
@@ -283,10 +349,10 @@ export default function MatreshkaQuantum() {
       isWin = false;
       netProfit = -effectiveBet;
       nextCdt += effectiveBet;
-      nextStep = currentStep + 1; // Zero increments step
+      nextStep = currentStep + 1;
     } else if (recommendation === outcome) {
       isWin = true;
-      netProfit = BankrollManager.calcNetWin(effectiveBet); // Exact server floor payout under 2% fee
+      netProfit = BankrollManager.calcNetWin(effectiveBet);
       nextCdt = Math.max(0, nextCdt - netProfit);
 
       if (nextCdt === 0) {
@@ -383,7 +449,7 @@ export default function MatreshkaQuantum() {
     if (nextStep === 5) playHum();
     if (nextStep >= 6) playAlert();
 
-    const newBankroll = initialBankroll + finalHistory.reduce((acc, curr) => acc + curr.netProfit, 0);
+    const newBankroll = currentBankroll + netProfit;
     if (newBankroll >= initialBankroll * 1.25 && !showSummary) {
       setShowSummary(true);
     }
@@ -414,6 +480,7 @@ export default function MatreshkaQuantum() {
     setManualBet(null);
     setManualColor(null);
     setIsEditingBet(false);
+    setIsEditingBalance(false);
 
     const newHistory = history.slice(0, -1);
     setHistory(newHistory);
@@ -437,7 +504,7 @@ export default function MatreshkaQuantum() {
       const entry = newHistory[i];
       const wasAtStart = cdtVal === 0 || step === 1;
       const startModeThisSpin = currentModeVal;
-      const startBankThisSpin = initialBankroll + runningNet;
+      const startBankThisSpin = initialBankroll + balanceCorrection + runningNet;
       const currentHist = newHistory.slice(0, i);
       const rec = PrngDetector.getRecommendationAndConfidence(currentHist).recommendation;
       const isWin = (entry.outcome === rec && entry.outcome !== 'ZERO');
@@ -505,7 +572,7 @@ export default function MatreshkaQuantum() {
     setSpinsInCurrentMode(spinsInCurrentModeVal);
     setSequenceStartMode(seqStartVal);
     setSequenceTargetSteps(seqTargetStepsVal);
-  }, [history, sessionLogs, initialBankroll, strategyProfile]);
+  }, [history, sessionLogs, initialBankroll, balanceCorrection, strategyProfile]);
 
   // Keyboard Hotkeys
   useEffect(() => {
@@ -530,6 +597,26 @@ export default function MatreshkaQuantum() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleOutcome, handleUndo]);
+
+  const resetFullSessionState = useCallback(() => {
+    setInitialBankroll(0);
+    setBalanceCorrection(0);
+    setHistory([]);
+    setCurrentStep(1);
+    setAttackStep(0);
+    setCdt(0);
+    setCurrentMode('ZEBRA');
+    setPreviousMode('ZEBRA');
+    setSpinsSinceDangerExit(999);
+    setSpinsInCurrentMode(0);
+    setSequenceStartMode('ZEBRA');
+    setSequenceTargetSteps(undefined);
+    setManualBet(null);
+    setManualColor(null);
+    setIsEditingBet(false);
+    setIsEditingBalance(false);
+    localStorage.removeItem('matreshka_quantum_v12_state');
+  }, []);
 
   // Save Session to LocalStorage
   const saveCurrentSession = useCallback(() => {
@@ -556,9 +643,10 @@ export default function MatreshkaQuantum() {
         date: new Date(sessionStartTime).toISOString(),
         initialBankroll,
         currentBankroll,
+        balanceCorrection,
         totalProfit: profit,
         maxDrawdown: detailedStats.maxDrawdown,
-        durationMs: detailedStats.profitPerHour > 0 ? Math.round(now - sessionStartTime) : 0,
+        durationMs: Math.max(0, now - sessionStartTime),
         strategyProfile
       },
       logs: sessionLogs
@@ -571,7 +659,7 @@ export default function MatreshkaQuantum() {
     document.body.appendChild(downloadAnchorNode);
     downloadAnchorNode.click();
     downloadAnchorNode.remove();
-  }, [sessionStartTime, initialBankroll, currentBankroll, profit, detailedStats, now, strategyProfile, sessionLogs]);
+  }, [sessionStartTime, initialBankroll, currentBankroll, balanceCorrection, profit, detailedStats.maxDrawdown, now, strategyProfile, sessionLogs]);
 
   // Chart data
   const chartData = useMemo(() => {
@@ -581,28 +669,41 @@ export default function MatreshkaQuantum() {
         {
           label: 'Баланс (₽)',
           data: sessionLogs.map(log => log.current_balance),
-          borderColor: profit >= 0 ? 'rgb(16, 185, 129)' : 'rgb(239, 68, 68)',
-          backgroundColor: profit >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-          pointRadius: sessionLogs.map(log => log.input_result === 'ZERO' ? 5 : 0),
-          pointBackgroundColor: sessionLogs.map(log => log.input_result === 'ZERO' ? 'rgb(59, 130, 246)' : 'transparent'),
-          pointBorderColor: sessionLogs.map(log => log.input_result === 'ZERO' ? 'rgb(59, 130, 246)' : 'transparent'),
-          tension: 0.15,
+          borderColor: profit >= 0 ? '#10B981' : '#F43F5E',
+          backgroundColor: profit >= 0 ? 'rgba(16, 185, 129, 0.10)' : 'rgba(244, 63, 94, 0.10)',
+          borderWidth: 2,
+          pointRadius: sessionLogs.map(log => (log.input_result === 'ZERO' ? 4.5 : 0)),
+          pointBackgroundColor: sessionLogs.map(log => (log.input_result === 'ZERO' ? '#38BDF8' : 'transparent')),
+          pointBorderColor: sessionLogs.map(log => (log.input_result === 'ZERO' ? '#0E131D' : 'transparent')),
+          pointBorderWidth: 1.5,
+          tension: 0.22,
           fill: true
         }
       ]
     };
   }, [sessionLogs, profit]);
 
-  const chartOptions = useMemo(() => ({
+  const chartOptions = useMemo<ChartOptions<'line'>>(() => ({
     responsive: true,
     maintainAspectRatio: false,
+    interaction: {
+      mode: 'index',
+      intersect: false,
+    },
     plugins: {
       legend: { display: false },
       tooltip: {
+        backgroundColor: '#090C12',
+        borderColor: 'rgba(255,255,255,0.12)',
+        borderWidth: 1,
+        titleColor: '#94A3B8',
+        bodyColor: '#F8FAFC',
+        padding: 10,
         callbacks: {
-          label: (context: { parsed: { y: number | null } }) => {
+          title: (items) => (items[0] ? `Спин #${items[0].label}` : ''),
+          label: (context) => {
             if (context.parsed.y !== null) {
-              return 'Баланс: ' + new Intl.NumberFormat('ru-RU').format(context.parsed.y) + ' ₽';
+              return ` ${new Intl.NumberFormat('ru-RU').format(context.parsed.y)} ₽`;
             }
             return '';
           }
@@ -612,65 +713,90 @@ export default function MatreshkaQuantum() {
     scales: {
       x: { display: false },
       y: {
-        grid: { color: 'rgba(255, 255, 255, 0.08)' },
-        ticks: { color: 'rgba(255, 255, 255, 0.5)', font: { size: 10 } }
+        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+        ticks: {
+          color: '#64748B',
+          font: { size: 10, family: 'var(--font-mono)' },
+          callback: (val) => new Intl.NumberFormat('ru-RU', { notation: 'compact' }).format(Number(val))
+        }
       }
     }
   }), []);
 
   if (!isClient) return null;
 
-  // Onboarding Screen
+  // Onboarding Screen (Streamlined, Tactical, No Clutter)
   if (initialBankroll === 0) {
     const parsedBankroll = Math.floor(Number(setupVal) || 0);
     const params = BankrollManager.getEngineParams(strategyProfile, 'ZEBRA', parsedBankroll);
 
     return (
-      <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 font-sans text-white">
+      <div className="min-h-screen bg-[#07090E] flex items-center justify-center p-4 font-sans text-slate-100">
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full bg-gray-900/90 border border-emerald-500/30 p-8 rounded-3xl shadow-[0_0_60px_rgba(16,185,129,0.15)]"
+          className="max-w-md w-full bg-[#0E131D]/95 border border-white/[0.08] p-7 rounded-3xl shadow-[0_24px_80px_rgba(0,0,0,0.65)]"
         >
-          <div className="flex items-center justify-center gap-2 mb-2">
-            <Sparkles className="text-emerald-400" size={20} />
-            <h1 className="text-xl font-black text-white tracking-widest uppercase">MATRESHKA QUANTUM</h1>
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.5.1 SOLVER</span>
-          </div>
-          <p className="text-gray-400 text-center text-xs mb-3">
-            50 слотов • 2 Зеро (4%) • Комиссия 2% (вниз) • Лимит 1 000 000 ₽
-          </p>
-          <div className="bg-black/40 border border-gray-800 rounded-xl p-2.5 mb-5 text-[11px] text-gray-400 text-center font-mono">
-            Мин. ставка: <span className="text-white font-bold">1 000 ₽</span> • Потолок: <span className="text-emerald-400 font-bold">1 000 000 ₽</span> • {params.stepsToLimit} шагов
+          <div className="flex items-center justify-between mb-6 pb-4 border-b border-white/[0.06]">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+                <Sparkles className="text-emerald-400" size={16} />
+              </div>
+              <div>
+                <h1 className="text-sm font-extrabold tracking-widest uppercase text-white">MATRESHKA QUANTUM</h1>
+                <p className="text-[11px] text-slate-400">Тактический менеджер сессии</p>
+              </div>
+            </div>
+            <span className="text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-300 px-2.5 py-1 rounded-full border border-emerald-500/30">
+              v12.5.1
+            </span>
           </div>
 
           <div className="space-y-5">
             <div>
-              <label className="block text-gray-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Ваш Баланс (₽)</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-slate-400 text-[11px] font-semibold uppercase tracking-wider">Стартовый баланс (₽)</label>
+                <div className="flex gap-1.5">
+                  {[1500000, 2500000, 3800000, 6500000].map(preset => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setSetupVal(String(preset))}
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${
+                        Number(setupVal) === preset
+                          ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                          : 'bg-[#090C12] border-white/[0.08] text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {(preset / 1000000).toFixed(1).replace('.0', '')}M
+                    </button>
+                  ))}
+                </div>
+              </div>
               <input
                 type="number"
                 value={setupVal}
                 onChange={e => setSetupVal(e.target.value)}
-                className="w-full bg-black/70 border border-gray-800 text-emerald-400 text-3xl p-4 rounded-2xl focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center font-bold"
-                placeholder="1000000"
+                className="w-full bg-[#090C12] border border-white/[0.1] text-emerald-400 text-3xl p-4 rounded-2xl focus:outline-none focus:border-emerald-500/70 transition-colors font-mono tabular-nums text-center font-bold"
+                placeholder="3500000"
               />
             </div>
 
             <div>
-              <label className="block text-gray-400 text-[10px] font-bold uppercase tracking-widest mb-2">Режим Калибровки Риска</label>
+              <label className="block text-slate-400 text-[11px] font-semibold uppercase tracking-wider mb-2">Профиль стратегии</label>
               <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setStrategyProfile('APEX_IDEAL')}
                   className={`p-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all flex flex-col items-center gap-1 cursor-pointer ${
                     strategyProfile === 'APEX_IDEAL'
-                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.25)]'
-                      : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
+                      ? 'bg-emerald-500/15 border-emerald-500/60 text-emerald-300 shadow-[0_0_24px_rgba(16,185,129,0.18)]'
+                      : 'bg-[#090C12] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
                   }`}
                 >
-                  <Sparkles size={16} />
+                  <Sparkles size={15} />
                   <span>APEX OPT</span>
-                  <span className="text-[9px] font-mono text-gray-400">8-10 шагов</span>
+                  <span className="text-[9px] font-mono text-slate-400 font-normal">8–10 шагов</span>
                 </button>
 
                 <button
@@ -678,13 +804,13 @@ export default function MatreshkaQuantum() {
                   onClick={() => setStrategyProfile('TURBO_HARVEST')}
                   className={`p-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all flex flex-col items-center gap-1 cursor-pointer ${
                     strategyProfile === 'TURBO_HARVEST'
-                      ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.25)]'
-                      : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
+                      ? 'bg-amber-500/15 border-amber-500/60 text-amber-300 shadow-[0_0_24px_rgba(245,158,11,0.18)]'
+                      : 'bg-[#090C12] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
                   }`}
                 >
-                  <Zap size={16} />
+                  <Zap size={15} />
                   <span>TURBO</span>
-                  <span className="text-[9px] font-mono text-gray-400">7-8 шагов</span>
+                  <span className="text-[9px] font-mono text-slate-400 font-normal">7–8 шагов</span>
                 </button>
 
                 <button
@@ -692,43 +818,43 @@ export default function MatreshkaQuantum() {
                   onClick={() => setStrategyProfile('SHIELD_CONSERVATIVE')}
                   className={`p-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-all flex flex-col items-center gap-1 cursor-pointer ${
                     strategyProfile === 'SHIELD_CONSERVATIVE'
-                      ? 'bg-blue-500/20 border-blue-500 text-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.25)]'
-                      : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
+                      ? 'bg-sky-500/15 border-sky-500/60 text-sky-300 shadow-[0_0_24px_rgba(56,189,248,0.18)]'
+                      : 'bg-[#090C12] border-white/[0.07] text-slate-400 hover:text-white hover:border-white/20'
                   }`}
                 >
-                  <Shield size={16} />
+                  <Shield size={15} />
                   <span>SHIELD</span>
-                  <span className="text-[9px] font-mono text-gray-400">10 шагов</span>
+                  <span className="text-[9px] font-mono text-slate-400 font-normal">10 шагов</span>
                 </button>
               </div>
             </div>
 
             {parsedBankroll > 0 && (
-              <div className="bg-black/50 p-4 rounded-2xl border border-gray-800 text-xs text-gray-300 space-y-1.5 font-mono">
+              <div className="bg-[#090C12] p-4 rounded-2xl border border-white/[0.07] text-xs space-y-2 font-mono tabular-nums">
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Базовая ставка (1-й шаг):</span>
+                  <span className="text-slate-400 font-sans">База (1-й шаг Зебра):</span>
                   <span className="font-bold text-white">{Math.floor(params.baseBet).toLocaleString('ru-RU')} ₽</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Финальная ставка ({params.stepsToLimit}-й шаг):</span>
+                  <span className="text-slate-400 font-sans">Финал ({params.stepsToLimit}-й шаг):</span>
                   <span className="font-bold text-amber-400">
                     {Math.floor(params.projectedTerminalBet ?? GAME_RULES.MAX_BET).toLocaleString('ru-RU')} ₽
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Множитель прогрессии (X):</span>
+                  <span className="text-slate-400 font-sans">Множитель роста X:</span>
                   <span className="font-bold text-emerald-400">{params.growthFactor.toFixed(3)}x</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Прочность последовательности:</span>
-                  <span className="font-bold text-white">{params.stepsToLimit} шагов (дост. {params.durabilitySteps})</span>
+                  <span className="text-slate-400 font-sans">Запас шагов:</span>
+                  <span className="font-bold text-slate-200">{params.stepsToLimit} (дост. {params.durabilitySteps})</span>
                 </div>
               </div>
             )}
 
             {strategyProfile === 'TURBO_HARVEST' && parsedBankroll > 0 && parsedBankroll < 3000000 && (
-              <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-2.5 text-[11px] text-amber-200 text-center">
-                При банке ниже 3 000 000 ₽ в TURBO автоматически включается защитная ступень (8 шагов), но на часовой дистанции безопаснее APEX OPT.
+              <div className="bg-amber-950/35 border border-amber-500/35 rounded-xl p-2.5 text-[11px] text-amber-200 text-center">
+                При банке ниже 3 000 000 ₽ на часовой дистанции безопаснее APEX OPT.
               </div>
             )}
 
@@ -737,6 +863,7 @@ export default function MatreshkaQuantum() {
                 const val = Math.floor(Number(setupVal));
                 if (val > 0) {
                   setInitialBankroll(val);
+                  setBalanceCorrection(0);
                   setHistory([]);
                   setCurrentStep(1);
                   setAttackStep(0);
@@ -751,22 +878,22 @@ export default function MatreshkaQuantum() {
                 }
               }}
               disabled={!setupVal || Number(setupVal) <= 0}
-              className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-black py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_0_25px_rgba(16,185,129,0.3)] text-sm cursor-pointer"
+              className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-bold py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_8px_30px_rgba(16,185,129,0.28)] text-sm cursor-pointer"
             >
-              Запустить Движок v12.5.1
+              Запустить сессию v12.5.1
             </button>
 
             {savedSessions.length > 0 && (
-              <div className="mt-6 border-t border-gray-800 pt-4">
-                <h3 className="text-gray-400 text-[10px] font-bold uppercase tracking-widest mb-3">Предыдущие сессии</h3>
-                <div className="space-y-2 max-h-40 overflow-y-auto pr-1 scrollbar-hide">
+              <div className="pt-4 border-t border-white/[0.06]">
+                <h3 className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-2.5">Архив сессий</h3>
+                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1 scrollbar-hide">
                   {savedSessions.map((s, i) => (
-                    <div key={s.id} className="bg-black/50 border border-gray-800 rounded-xl p-2.5 flex justify-between items-center text-xs">
+                    <div key={s.id} className="bg-[#090C12] border border-white/[0.06] rounded-xl px-3 py-2 flex justify-between items-center text-xs">
                       <div>
-                        <div className="text-gray-400 font-bold">Сессия №{savedSessions.length - i}</div>
-                        <div className="text-[10px] text-gray-500">{Math.round(s.durationMs / 60000)} мин | Зеро: {s.zeroCount}</div>
+                        <div className="text-slate-300 font-semibold">Сессия №{savedSessions.length - i}</div>
+                        <div className="text-[10px] text-slate-500 font-mono">{Math.round(s.durationMs / 60000)} мин · Зеро: {s.zeroCount}</div>
                       </div>
-                      <div className={`font-mono font-bold ${s.profit >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
+                      <div className={`font-mono font-bold tabular-nums ${s.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                         {s.profit >= 0 ? '+' : ''}{(s.profit >= 0 ? Math.floor(s.profit) : Math.trunc(s.profit)).toLocaleString('ru-RU')} ₽
                       </div>
                     </div>
@@ -781,415 +908,533 @@ export default function MatreshkaQuantum() {
   }
 
   const durationMs = now - sessionStartTime;
+  const activeProfileMeta = PROFILE_LABELS[strategyProfile];
+  const zeroDiffWarning = detailedStats.totalSpins >= 15 && detailedStats.zeroRateExact >= 6.0;
 
   return (
-    <div className="min-h-screen bg-[#050505] text-white font-sans selection:bg-emerald-500/30 pb-16 transition-colors duration-500">
-      {/* Header */}
-      <header className="border-b border-gray-800 bg-[#050505]/90 backdrop-blur-md sticky top-0 z-20">
-        <div className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12.5.1</h1>
-              <span className="text-[10px] font-mono text-gray-400 bg-gray-900 border border-gray-800 px-1.5 py-0.5 rounded">
+    <div className="min-h-screen bg-[#07090E] text-slate-100 font-sans selection:bg-emerald-500/30 pb-14">
+      {/* Compact Tactical Header (No Clutter Strip) */}
+      <header className="border-b border-white/[0.07] bg-[#0A0D15]/90 backdrop-blur-md sticky top-0 z-20">
+        <div className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto px-4 py-3 flex flex-wrap justify-between items-center gap-3">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${effectiveMode === 'DANGER' ? 'bg-rose-500' : effectiveMode === 'TRANSITION' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+              <span className="text-[11px] font-bold tracking-widest text-slate-300 uppercase">MATRESHKA QUANTUM</span>
+              <span className="text-[10px] font-mono text-slate-400 bg-white/[0.05] px-1.5 py-0.5 rounded">v12.5.1</span>
+              <span className="text-[11px] font-mono tabular-nums text-slate-400 bg-[#090C12] border border-white/[0.08] px-2 py-0.5 rounded-md">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
               </span>
+              <button
+                onClick={() => setShowProfileModal(true)}
+                className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md border transition-colors cursor-pointer ${activeProfileMeta.badgeClass}`}
+                title="Сменить профиль стратегии"
+              >
+                {activeProfileMeta.title}
+              </button>
             </div>
-            <div className={`text-2xl font-mono font-black tracking-tight ${profit >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
-              {profit >= 0 ? '+' : ''}{Math.floor(profit).toLocaleString('ru-RU')} ₽
-              <span className="text-xs text-gray-500 font-bold ml-1.5 font-sans">({sessionROI}%)</span>
-            </div>
-            <div className="text-[11px] text-gray-400 font-mono">
-              Баланс: <span className="font-bold text-white">{Math.floor(currentBankroll).toLocaleString('ru-RU')} ₽</span>
+
+            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+              <div className={`text-2xl font-mono font-extrabold tracking-tight tabular-nums ${profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {profit >= 0 ? '+' : ''}{(profit >= 0 ? Math.floor(profit) : Math.trunc(profit)).toLocaleString('ru-RU')} ₽
+                <span className="text-xs text-slate-400 font-semibold ml-1.5 font-sans">({sessionROI}%)</span>
+              </div>
+
+              {isEditingBalance ? (
+                <div className="flex items-center gap-1.5 bg-[#090C12] border border-emerald-500/40 rounded-lg px-2 py-0.5">
+                  <span className="text-[10px] text-slate-400">В игре:</span>
+                  <input
+                    type="number"
+                    value={editBalanceValue}
+                    onChange={e => setEditBalanceValue(e.target.value)}
+                    className="bg-transparent text-xs font-mono font-bold text-white w-24 focus:outline-none tabular-nums"
+                    autoFocus
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        const val = Math.floor(Number(editBalanceValue));
+                        if (!isNaN(val) && val >= 0) setBalanceCorrection(val - rawHistoryBankroll);
+                        setIsEditingBalance(false);
+                      } else if (e.key === 'Escape') {
+                        setIsEditingBalance(false);
+                      }
+                    }}
+                  />
+                  <button
+                    onClick={() => {
+                      const val = Math.floor(Number(editBalanceValue));
+                      if (!isNaN(val) && val >= 0) setBalanceCorrection(val - rawHistoryBankroll);
+                      setIsEditingBalance(false);
+                    }}
+                    className="text-[10px] bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-1.5 py-0.5 rounded cursor-pointer"
+                  >
+                    ОК
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    setEditBalanceValue(Math.floor(currentBankroll).toString());
+                    setIsEditingBalance(true);
+                  }}
+                  className="text-xs text-slate-400 hover:text-white font-mono tabular-nums flex items-center gap-1.5 transition-colors cursor-pointer group"
+                  title="Синхронизировать баланс с игровым"
+                >
+                  <span>Баланс:</span>
+                  <strong className="text-slate-100 group-hover:text-emerald-300 transition-colors">
+                    {Math.floor(currentBankroll).toLocaleString('ru-RU')} ₽
+                  </strong>
+                  {balanceCorrection !== 0 && (
+                    <span className="text-[10px] text-sky-400">({balanceCorrection > 0 ? '+' : ''}{balanceCorrection})</span>
+                  )}
+                  <Pencil size={11} className="text-slate-500 group-hover:text-emerald-400 transition-colors" />
+                </button>
+              )}
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowProfileModal(true)}
-              className="text-gray-400 hover:text-white transition-colors p-2.5 bg-gray-900 rounded-xl border border-gray-800"
-              title="Выбор режима агрессии"
+              className="text-slate-400 hover:text-white transition-colors p-2.5 bg-[#0E131D] rounded-xl border border-white/[0.08] cursor-pointer"
+              title="Настройки профиля"
             >
-              <Sliders size={18} />
+              <Sliders size={17} />
             </button>
             <button
               onClick={() => setShowResetConfirm(true)}
-              className="text-gray-400 hover:text-red-400 transition-colors p-2.5 bg-gray-900 rounded-xl border border-gray-800"
+              className="text-slate-400 hover:text-rose-400 transition-colors p-2.5 bg-[#0E131D] rounded-xl border border-white/[0.08] cursor-pointer"
               title="Завершить сессию"
             >
-              <RotateCcw size={18} />
+              <RotateCcw size={17} />
             </button>
           </div>
         </div>
       </header>
 
-      {/* Game Rules & Casino Table Context Strip */}
-      <div className="bg-gray-950/80 border-b border-gray-800/80 py-1.5 px-4">
-        <div className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono text-gray-400">
-          <div className="flex items-center gap-2">
-            <span className="text-emerald-400 font-bold">50 СЛОТОВ:</span>
-            <span>24 Красных (48%)</span>
-            <span className="text-gray-600">•</span>
-            <span>24 Чёрных (48%)</span>
-            <span className="text-gray-600">•</span>
-            <span className="text-emerald-400 font-bold">2 Зеро (4.0%)</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span>Мин: <strong className="text-white">1 000 ₽</strong></span>
-            <span className="text-gray-600">•</span>
-            <span>Лимит: <strong className="text-amber-400">1 000 000 ₽</strong></span>
-            <span className="text-gray-600">•</span>
-            <span>Комиссия: <strong className="text-gray-300">2% (вниз)</strong></span>
-          </div>
-        </div>
-      </div>
-
-      <main className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto p-4 space-y-4">
-        <div className="md:grid md:grid-cols-2 md:gap-6 lg:gap-8 items-start space-y-4 md:space-y-0">
-          {/* Left Column: Command & Play Area */}
-          <div className="space-y-4">
-        {/* Main Quantum Display Card */}
-        <motion.div
-          key={`${currentStep}-${effectiveMode}-${recommendation}`}
-          initial={{ scale: 0.98, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className={`relative overflow-hidden rounded-3xl p-6 border-2 flex flex-col items-center justify-center min-h-[250px] shadow-2xl transition-all
-            ${effectiveMode === 'DANGER' ? 'bg-black border-red-500 shadow-[0_0_40px_rgba(239,68,68,0.3)] animate-pulse' :
-            effectiveMode === 'TRANSITION' ? 'bg-black border-yellow-500 shadow-[0_0_35px_rgba(234,179,8,0.2)]' :
-            'bg-black border-emerald-500 shadow-[0_0_35px_rgba(16,185,129,0.2)]'}`}
-        >
-          {/* Top Indicator Row */}
-          <div className="w-full flex justify-between items-center mb-1">
-            <div className={`text-xs font-black tracking-widest uppercase ${
-              currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-yellow-400' : 'text-red-500'
-            }`}>
-              {effectiveMode === 'DANGER' ? `ШАГ: ${currentStep} (DANGER)` : `ШАГ ПРОГРЕССИИ: ${currentStep}`}
-            </div>
-
-            <div className="text-right flex items-center gap-1.5">
-              {isZebraLocked && (
-                <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/40">
-                  LOCK ({currentMode})
-                </span>
-              )}
-              <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${
-                effectiveMode === 'DANGER' ? 'bg-red-500/20 text-red-400 border-red-500/40' :
-                effectiveMode === 'TRANSITION' ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/40' :
-                'bg-emerald-500/20 text-emerald-400 border-emerald-500/40'
-              }`}>
-                {effectiveMode === 'DANGER' ? '🔴 DANGER (МОНО-СЕРИИ 5+ / ZERO)' :
-                 effectiveMode === 'TRANSITION' ? '🟡 ПЕРЕХОДНЫЙ (СЕРИИ 3-4)' :
-                 '🟢 ЧЕРЕДОВАНИЕ (ZEBRA)'}
-              </span>
-            </div>
-          </div>
-
-          {/* Subtitle / Pattern Info */}
-          <div className="text-[11px] font-bold text-gray-400 tracking-wider uppercase mb-1 flex items-center gap-1.5">
-            <span>{prediction.state}</span>
-            <span className="text-gray-600">•</span>
-            <span className="text-emerald-400 font-mono">{prediction.confidence}% уверенность</span>
-          </div>
-
-          {/* Mode Strategy Hint */}
-          <div className="text-[10px] font-medium text-gray-400 text-center mb-1">
-            {effectiveMode === 'ZEBRA' && `✨ Чередование: макс. сбор прибыли (B₀ ${Math.floor(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов • ${isZebraLocked ? 'Zebra Lock активен' : 'Высокий EV'}`}
-            {effectiveMode === 'TRANSITION' && `⚡ Переходная зона: баланс профита/риска (B₀ ${Math.floor(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов`}
-            {effectiveMode === 'DANGER' && `🛡️ Аномалии / Zero: защита банка (B₀ ${Math.floor(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов • 980k Horizon Guard`}
-          </div>
-
-          {/* Dynamic Constant Multiplier Badge */}
-          <div className="text-[10px] font-mono text-gray-400 bg-gray-900/80 border border-gray-800 px-2.5 py-0.5 rounded-full mb-1 flex items-center gap-1.5 shadow-sm">
-            <span>Множитель X: <strong className="text-emerald-400 font-bold">{engineParams.growthFactor.toFixed(3)}x</strong></span>
-            <span className="text-gray-600">•</span>
-            <span>Потолок {Math.floor(engineParams.projectedTerminalBet ?? GAME_RULES.MAX_BET).toLocaleString('ru-RU')} ₽ на шаге {engineParams.stepsToLimit}</span>
-          </div>
-
-          {/* Next Recommendation in Large Display */}
-          <div className={`text-6xl sm:text-7xl font-black tracking-tighter my-2 drop-shadow-md ${
-            effectiveMode === 'DANGER' ? 'text-red-400' :
-            recommendation === 'RED' ? 'text-red-500' :
-            recommendation === 'BLACK' ? 'text-white' : 'text-emerald-400'
-          }`}>
-            {recommendationText}
-          </div>
-
-          {/* Bet Display with Misclick Edit Icon */}
-          <div className="mt-1 flex items-center justify-center gap-3">
-            {isEditingBet ? (
-              <div className="flex flex-col items-center gap-3 bg-gray-900/90 p-4 rounded-2xl border border-gray-700">
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-400 text-sm font-bold">СТАВКА:</span>
-                  <input
-                    type="number"
-                    value={editBetValue}
-                    onChange={e => setEditBetValue(e.target.value)}
-                    className="bg-black border border-gray-700 rounded-xl px-3 py-1 text-2xl font-mono text-center w-36 text-white focus:outline-none focus:border-emerald-500"
-                    autoFocus
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') {
-                        const val = parseInt(editBetValue, 10);
-                        if (!isNaN(val) && val >= 1000) setManualBet(val);
-                        setIsEditingBet(false);
-                      } else if (e.key === 'Escape') {
-                        setIsEditingBet(false);
-                      }
-                    }}
-                  />
-                  <span className="text-gray-400 text-sm font-bold">₽</span>
+      <main className="max-w-md md:max-w-4xl lg:max-w-6xl mx-auto p-4">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          {/* LEFT COLUMN: Decision & Action Terminal */}
+          <div className="lg:col-span-5 space-y-4">
+            {/* Primary Signal Display Card (Calm, High-Contrast, Non-Pulsing) */}
+            <motion.div
+              key={`${currentStep}-${effectiveMode}-${recommendation}`}
+              initial={{ opacity: 0.92, scale: 0.99 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.16 }}
+              className={`relative overflow-hidden rounded-3xl p-5 border flex flex-col items-center justify-center min-h-[256px] transition-all bg-[#0E131D] ${
+                effectiveMode === 'DANGER'
+                  ? 'border-rose-500/65 shadow-[0_0_45px_rgba(244,63,94,0.16)]'
+                  : effectiveMode === 'TRANSITION'
+                  ? 'border-amber-500/55 shadow-[0_0_40px_rgba(245,158,11,0.14)]'
+                  : 'border-emerald-500/50 shadow-[0_0_40px_rgba(16,185,129,0.14)]'
+              }`}
+            >
+              {/* Status Bar */}
+              <div className="w-full flex justify-between items-center mb-3">
+                <div className={`text-xs font-extrabold tracking-widest uppercase font-mono ${
+                  currentStep <= 3 ? 'text-emerald-400' : currentStep <= 6 ? 'text-amber-400' : 'text-rose-400'
+                }`}>
+                  ШАГ {currentStep} / {engineParams.stepsToLimit}
                 </div>
 
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Изменить цвет (мисклик)</div>
-                <div className="flex gap-2.5 items-center">
-                  <button
-                    onClick={() => setManualColor('RED')}
-                    className={`w-10 h-10 rounded-full bg-red-600 border border-red-400 shadow-[0_0_12px_rgba(220,38,38,0.5)] ${manualColor === 'RED' ? 'ring-4 ring-white' : ''}`}
-                    title="Выбрать Красное"
-                  />
-                  <button
-                    onClick={() => setManualColor('ZERO')}
-                    className={`w-10 h-10 rounded-full bg-emerald-600 border border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.5)] ${manualColor === 'ZERO' ? 'ring-4 ring-white' : ''}`}
-                    title="Выбрать Зеро"
-                  />
-                  <button
-                    onClick={() => setManualColor('BLACK')}
-                    className={`w-10 h-10 rounded-full bg-gray-800 border border-gray-600 shadow-[0_0_12px_rgba(0,0,0,0.5)] ${manualColor === 'BLACK' ? 'ring-4 ring-white' : ''}`}
-                    title="Выбрать Чёрное"
-                  />
-                  <button
-                    onClick={() => {
-                      const val = parseInt(editBetValue, 10);
-                      if (!isNaN(val) && val >= 1000) setManualBet(val);
-                      setIsEditingBet(false);
-                    }}
-                    className="ml-2 bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition-colors"
-                  >
-                    ОК
-                  </button>
+                <div className="flex items-center gap-1.5">
+                  {isZebraLocked && (
+                    <span className="text-[9px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/35">
+                      LOCK ({currentMode})
+                    </span>
+                  )}
+                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-md border ${
+                    effectiveMode === 'DANGER'
+                      ? 'bg-rose-500/15 text-rose-300 border-rose-500/40'
+                      : effectiveMode === 'TRANSITION'
+                      ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                      : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                  }`}>
+                    {effectiveMode === 'DANGER' ? 'DANGER' : effectiveMode === 'TRANSITION' ? 'ПЕРЕХОД' : 'ZEBRA'}
+                  </span>
                 </div>
               </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="text-3xl sm:text-4xl font-mono font-black text-white">
-                  {Math.floor(effectiveBet).toLocaleString('ru-RU')} ₽
+
+              {/* Pattern State & Confidence */}
+              <div className="text-[11px] font-semibold text-slate-400 tracking-wider uppercase flex items-center gap-2">
+                <span>{prediction.state}</span>
+                <span className="text-slate-600">•</span>
+                <span className="text-emerald-400 font-mono">{prediction.confidence}%</span>
+              </div>
+
+              {/* Hero Color Prediction */}
+              <div className={`text-5xl sm:text-6xl font-black tracking-tight my-3 select-none ${
+                recommendation === 'RED'
+                  ? 'text-rose-500 drop-shadow-[0_0_24px_rgba(244,63,94,0.35)]'
+                  : recommendation === 'BLACK'
+                  ? 'text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.18)]'
+                  : 'text-emerald-400'
+              }`}>
+                {recommendationText}
+              </div>
+
+              {/* Bet Amount & Inline Edit */}
+              <div className="flex items-center justify-center">
+                {isEditingBet ? (
+                  <div className="flex flex-col items-center gap-2.5 bg-[#090C12] p-3.5 rounded-2xl border border-white/15">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        value={editBetValue}
+                        onChange={e => setEditBetValue(e.target.value)}
+                        className="bg-black/60 border border-white/15 rounded-xl px-3 py-1.5 text-xl font-mono text-center w-36 text-white focus:outline-none focus:border-emerald-500 tabular-nums"
+                        autoFocus
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            const val = parseInt(editBetValue, 10);
+                            if (!isNaN(val) && val >= 1000) setManualBet(val);
+                            setIsEditingBet(false);
+                          } else if (e.key === 'Escape') {
+                            setIsEditingBet(false);
+                          }
+                        }}
+                      />
+                      <span className="text-slate-400 text-sm font-bold">₽</span>
+                    </div>
+
+                    <div className="flex gap-2 items-center">
+                      <button
+                        onClick={() => setManualColor('RED')}
+                        className={`w-8 h-8 rounded-full bg-rose-600 border border-rose-400 ${manualColor === 'RED' ? 'ring-2 ring-white' : ''}`}
+                        title="Красное"
+                      />
+                      <button
+                        onClick={() => setManualColor('ZERO')}
+                        className={`w-8 h-8 rounded-full bg-emerald-600 border border-emerald-400 ${manualColor === 'ZERO' ? 'ring-2 ring-white' : ''}`}
+                        title="Зеро"
+                      />
+                      <button
+                        onClick={() => setManualColor('BLACK')}
+                        className={`w-8 h-8 rounded-full bg-slate-800 border border-slate-500 ${manualColor === 'BLACK' ? 'ring-2 ring-white' : ''}`}
+                        title="Чёрное"
+                      />
+                      <button
+                        onClick={() => {
+                          const val = parseInt(editBetValue, 10);
+                          if (!isNaN(val) && val >= 1000) setManualBet(val);
+                          setIsEditingBet(false);
+                        }}
+                        className="ml-1 bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 rounded-xl text-xs font-bold uppercase text-white cursor-pointer"
+                      >
+                        ОК
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <span className="text-3xl sm:text-4xl font-mono font-extrabold text-white tabular-nums tracking-tight">
+                      {Math.floor(effectiveBet).toLocaleString('ru-RU')} ₽
+                    </span>
+                    <button
+                      onClick={() => {
+                        setEditBetValue(Math.floor(effectiveBet).toString());
+                        setIsEditingBet(true);
+                      }}
+                      className="text-slate-500 hover:text-emerald-400 transition-colors p-1.5 rounded-lg hover:bg-white/[0.05] cursor-pointer"
+                      title="Изменить ставку или цвет"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Clean Live Ladder Info & Net Profit Preview */}
+              <div className="mt-3 pt-3 w-full border-t border-white/[0.06] flex items-center justify-between text-[11px] font-mono text-slate-400">
+                <span>
+                  База <strong className="text-slate-200">{Math.floor(engineParams.baseBet).toLocaleString('ru-RU')}</strong> · {engineParams.growthFactor.toFixed(2)}x
                 </span>
+                <span>
+                  Выигрыш даст:{' '}
+                  <strong className={netWinIfHit >= 0 ? 'text-emerald-400' : 'text-amber-400'}>
+                    {netWinIfHit >= 0 ? '+' : ''}{netWinIfHit.toLocaleString('ru-RU')} ₽
+                  </strong>
+                </span>
+              </div>
+
+              {effectiveBet >= GAME_RULES.MAX_BET && (
+                <div className="mt-2.5 bg-rose-500/20 border border-rose-500/50 text-rose-200 text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-widest">
+                  Предельная ставка стола (1 000 000 ₽)
+                </div>
+              )}
+            </motion.div>
+
+            {/* CDT & Live EV Speed Strip */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className={`p-3.5 rounded-2xl border transition-colors bg-[#0E131D] ${
+                cdt === 0 ? 'border-white/[0.07]' : 'border-rose-500/35 bg-rose-950/15'
+              }`}>
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Дефицит серии (CDT)</div>
+                <div className={`text-lg font-mono font-bold tabular-nums mt-0.5 ${cdt === 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {Math.floor(cdt).toLocaleString('ru-RU')} ₽
+                </div>
+              </div>
+              <div className="p-3.5 rounded-2xl border border-white/[0.07] bg-[#0E131D] text-right">
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Скорость EV / час</div>
+                <div className={`text-lg font-mono font-bold tabular-nums mt-0.5 ${detailedStats.profitPerHour >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {detailedStats.profitPerHour >= 0 ? '+' : ''}{Math.trunc(detailedStats.profitPerHour).toLocaleString('ru-RU')} ₽
+                </div>
+              </div>
+            </div>
+
+            {/* Rapid Input Controls */}
+            <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-3.5 space-y-2.5">
+              <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono px-0.5">
+                <span className="uppercase tracking-wider font-sans font-semibold">Фиксация исхода</span>
+                <span>Темп: <strong className="text-slate-200">{avgSpinPaceSec} сек</strong></span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
                 <button
-                  onClick={() => {
-                    setEditBetValue(Math.floor(effectiveBet).toString());
-                    setIsEditingBet(true);
-                  }}
-                  className="text-gray-500 hover:text-white transition-colors p-1"
-                  title="Изменить ставку или цвет при ошибке ввода"
+                  onClick={() => handleOutcome('RED')}
+                  className="bg-gradient-to-b from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 active:scale-[0.97] transition-all h-20 rounded-xl font-black text-base sm:text-lg tracking-wide shadow-[0_6px_20px_rgba(225,29,72,0.3)] border border-rose-400/30 flex flex-col items-center justify-center cursor-pointer"
                 >
-                  ✏️
+                  <span>КРАСНОЕ</span>
+                  <span className="text-[10px] text-rose-200/80 font-mono font-medium mt-0.5">[1] / [R]</span>
+                </button>
+
+                <button
+                  onClick={() => handleOutcome('ZERO')}
+                  className="bg-gradient-to-b from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 active:scale-[0.97] transition-all h-20 rounded-xl font-black text-base sm:text-lg tracking-wide shadow-[0_6px_20px_rgba(16,185,129,0.28)] border border-emerald-400/30 flex flex-col items-center justify-center cursor-pointer"
+                >
+                  <span>ЗЕРО</span>
+                  <span className="text-[10px] text-emerald-200/80 font-mono font-medium mt-0.5">[0] / [Z]</span>
+                </button>
+
+                <button
+                  onClick={() => handleOutcome('BLACK')}
+                  className="bg-gradient-to-b from-slate-800 to-slate-900 hover:from-slate-700 hover:to-slate-800 active:scale-[0.97] transition-all h-20 rounded-xl font-black text-base sm:text-lg tracking-wide border border-slate-600/50 shadow-[0_6px_20px_rgba(0,0,0,0.45)] flex flex-col items-center justify-center cursor-pointer"
+                >
+                  <span>ЧЁРНОЕ</span>
+                  <span className="text-[10px] text-slate-400 font-mono font-medium mt-0.5">[2] / [B]</span>
                 </button>
               </div>
-            )}
-          </div>
 
-          {effectiveBet >= GAME_RULES.MAX_BET && (
-            <div className="mt-2 bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest animate-pulse">
-              ЛИМИТ СТОЛА (1 000 000 ₽)
+              <button
+                onClick={handleUndo}
+                disabled={history.length === 0}
+                className="w-full py-2.5 rounded-xl bg-[#090C12] border border-white/[0.07] text-slate-400 hover:text-white hover:border-white/15 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-35 disabled:pointer-events-none uppercase tracking-wider text-[11px] font-semibold cursor-pointer"
+              >
+                <Undo2 size={14} /> Отменить последний спин [Backspace]
+              </button>
             </div>
-          )}
-        </motion.div>
 
-        {/* CDT (Cumulative Debt Tracking) Monitor */}
-        <div className={`p-3.5 rounded-2xl border-2 flex justify-between items-center transition-colors ${
-          cdt === 0 ? 'bg-emerald-950/20 border-emerald-500/30' : 'bg-red-950/20 border-red-500/30'
-        }`}>
-          <div>
-            <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Накопленный дефицит (CDT)</div>
-            <div className={`text-xl font-mono font-black ${cdt === 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {Math.floor(cdt).toLocaleString('ru-RU')} ₽
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Прогноз EV / Час</div>
-            <div className={`text-xl font-mono font-black ${detailedStats.profitPerHour >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {detailedStats.profitPerHour >= 0 ? '+' : ''}{Math.trunc(detailedStats.profitPerHour).toLocaleString('ru-RU')} ₽
-            </div>
-          </div>
-        </div>
-
-        {/* INPUT ZONE (Optimized for Sub-10ms response) */}
-        <div className="pt-2">
-          <div className="text-center text-gray-500 text-[10px] font-bold tracking-widest uppercase mb-2.5 flex items-center justify-center gap-2">
-            <span>Ввод результата</span>
-            <span className="text-gray-600 font-mono">[Num 1: Красное | Num 2: Чёрное | Num 0: Зеро]</span>
-          </div>
-          <div className="grid grid-cols-3 gap-2.5">
-            <button
-              onClick={() => handleOutcome('RED')}
-              className="bg-red-600 hover:bg-red-500 active:scale-95 transition-all h-22 rounded-2xl font-black text-xl tracking-wider shadow-[0_0_25px_rgba(220,38,38,0.35)] border border-red-500/50 flex flex-col items-center justify-center cursor-pointer"
-            >
-              <span>КРАСНОЕ</span>
-              <span className="text-[10px] text-red-200 font-mono mt-0.5">[1] / [R]</span>
-            </button>
-
-            <button
-              onClick={() => handleOutcome('ZERO')}
-              className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 transition-all h-22 rounded-2xl font-black text-xl tracking-wider shadow-[0_0_25px_rgba(16,185,129,0.35)] border border-emerald-500/50 flex flex-col items-center justify-center cursor-pointer"
-            >
-              <span>ЗЕРО</span>
-              <span className="text-[10px] text-emerald-200 font-mono mt-0.5">[0] / [Z]</span>
-            </button>
-
-            <button
-              onClick={() => handleOutcome('BLACK')}
-              className="bg-gray-900 hover:bg-gray-800 active:scale-95 transition-all h-22 rounded-2xl font-black text-xl tracking-wider border border-gray-700 shadow-[0_0_25px_rgba(0,0,0,0.6)] flex flex-col items-center justify-center cursor-pointer"
-            >
-              <span>ЧЁРНОЕ</span>
-              <span className="text-[10px] text-gray-400 font-mono mt-0.5">[2] / [B]</span>
-            </button>
-          </div>
-
-          <div className="text-center text-gray-600 text-[10px] font-mono font-bold mt-2">
-            ⏱ Цель: 8-10 сек между спинами | Текущий темп: {sessionLogs.length > 1 ? Math.round(sessionLogs.slice(-10).reduce((acc, l, i, arr) => i > 0 ? acc + (arr[i].time_since_last_spin || 0) : 0, 0) / Math.min(9, sessionLogs.length - 1) / 1000) : 0} сек
-          </div>
-        </div>
-
-        {/* Undo Action */}
-        <button
-          onClick={handleUndo}
-          disabled={history.length === 0}
-          className="w-full py-3.5 rounded-2xl border border-gray-800 text-gray-400 hover:text-white hover:bg-gray-900 active:scale-95 transition-all flex items-center justify-center gap-2 disabled:opacity-40 disabled:pointer-events-none uppercase tracking-widest text-[11px] font-bold cursor-pointer"
-        >
-          <Undo2 size={15} /> Отменить Последний Ввод [Backspace / .]
-        </button>
-
-            {/* Risk Meter (Dynamic Durability to 1M Ceiling) */}
-            <div className="w-full bg-gray-900/60 rounded-2xl p-4 border border-gray-800">
-              <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 mb-2.5 tracking-widest uppercase font-mono">
-                <span>Запас прочности: {currentStep} / {engineParams.stepsToLimit} шагов</span>
-                <span className={currentStep >= engineParams.stepsToLimit ? 'text-amber-400 font-black animate-pulse' : 'text-emerald-400'}>
-                  {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до потолка 1М
+            {/* Durability Meter */}
+            <div className="bg-[#0E131D] rounded-2xl p-4 border border-white/[0.07]">
+              <div className="flex justify-between items-center text-[10px] font-bold text-slate-400 mb-2.5 tracking-wider uppercase font-mono">
+                <span>Запас прочности: {currentStep} / {engineParams.stepsToLimit}</span>
+                <span className={currentStep >= engineParams.stepsToLimit ? 'text-amber-400' : 'text-emerald-400'}>
+                  {Math.max(0, engineParams.stepsToLimit - currentStep)} ш. до потолка
                 </span>
               </div>
-              <div className="flex gap-1.5 h-3">
-                {Array.from({ length: Math.max(8, engineParams.stepsToLimit) }, (_, idx) => idx + 1).map(i => {
-                  let bgColor = 'bg-gray-800';
+              <div className="flex gap-1.5 h-2.5">
+                {Array.from({ length: Math.max(7, engineParams.stepsToLimit) }, (_, idx) => idx + 1).map(i => {
+                  let bgColor = 'bg-slate-800/80';
                   if (i <= currentStep) {
                     if (i <= Math.floor(engineParams.stepsToLimit * 0.4)) bgColor = 'bg-emerald-500';
-                    else if (i <= Math.floor(engineParams.stepsToLimit * 0.7)) bgColor = 'bg-yellow-500';
-                    else if (i < engineParams.stepsToLimit) bgColor = 'bg-red-500';
-                    else bgColor = 'bg-amber-400 animate-pulse';
+                    else if (i <= Math.floor(engineParams.stepsToLimit * 0.7)) bgColor = 'bg-amber-400';
+                    else if (i < engineParams.stepsToLimit) bgColor = 'bg-rose-500';
+                    else bgColor = 'bg-amber-300';
                   }
                   return (
                     <div
                       key={i}
-                      className={`flex-1 rounded-sm ${bgColor} transition-colors duration-300`}
+                      className={`flex-1 rounded-sm ${bgColor} transition-colors duration-200`}
                       title={`Шаг ${i} из ${engineParams.stepsToLimit}`}
                     />
                   );
                 })}
               </div>
               {currentStep >= engineParams.stepsToLimit && (
-                <div className="mt-2.5 bg-amber-500/20 border border-amber-500/50 rounded-xl p-2 text-center text-amber-300 text-[10px] font-black uppercase tracking-wider">
-                  ⚡ Терминальный шаг: ставка упирается в потолок ({Math.min(GAME_RULES.MAX_BET, Math.floor(currentBankroll)).toLocaleString('ru-RU')} ₽) для максимального съёма профита
+                <div className="mt-2.5 bg-amber-500/15 border border-amber-500/35 rounded-xl p-2 text-center text-amber-200 text-[10px] font-semibold">
+                  Терминальный шаг: ставка упёрлась в {Math.min(GAME_RULES.MAX_BET, Math.floor(currentBankroll)).toLocaleString('ru-RU')} ₽
                 </div>
               )}
             </div>
           </div>
 
-          {/* Right Column: Deep Analytical Stream & Real-time Intelligence */}
-          <div className="space-y-4">
-            {/* Live Chart.js */}
-            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4">
+          {/* RIGHT COLUMN: High-Value Performance Metrics, Chart & Stream Intelligence */}
+          <div className="lg:col-span-7 space-y-4">
+            {/* Live Performance KPI Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-3.5">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                  <span>Винрейт</span>
+                  <Target size={13} className="text-emerald-400" />
+                </div>
+                <div className={`text-xl font-mono font-extrabold tabular-nums mt-1 ${
+                  detailedStats.winRate >= 50 ? 'text-emerald-400' : detailedStats.winRate >= 46 ? 'text-white' : 'text-amber-400'
+                }`}>
+                  {detailedStats.winRate}%
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 mt-1">
+                  б/Zero: <span className="text-slate-200">{detailedStats.nonZeroWinRate}%</span> · L20: <span className="text-slate-200">{detailedStats.recentWinRate20}%</span>
+                </div>
+              </div>
+
+              <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-3.5">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                  <span>Спины и Шаг</span>
+                  <Activity size={13} className="text-sky-400" />
+                </div>
+                <div className="text-xl font-mono font-extrabold text-white tabular-nums mt-1">
+                  {detailedStats.winCount}<span className="text-emerald-400 text-xs">W</span> / {detailedStats.lossCount}<span className="text-rose-400 text-xs">L</span>
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 mt-1">
+                  Ср. закр: <span className="text-slate-200">{detailedStats.avgCloseStep}</span> · Пик: <span className="text-amber-300">{detailedStats.maxStepReached}</span>
+                </div>
+              </div>
+
+              <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-3.5">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                  <span>Просадка</span>
+                  <TrendingUp size={13} className="text-rose-400" />
+                </div>
+                <div className="text-xl font-mono font-extrabold text-rose-400 tabular-nums mt-1">
+                  {detailedStats.maxDrawdown > 0 ? '-' : ''}{detailedStats.maxDrawdown.toLocaleString('ru-RU')}
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 mt-1 truncate">
+                  {detailedStats.currentDrawdown === 0 ? (
+                    <span className="text-emerald-400">На пике баланса</span>
+                  ) : (
+                    <span>Сейчас: <span className="text-rose-300">-{detailedStats.currentDrawdown.toLocaleString('ru-RU')} ₽</span></span>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-3.5">
+                <div className="flex items-center justify-between text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                  <span>Оборот</span>
+                  <Flame size={13} className="text-amber-400" />
+                </div>
+                <div className="text-xl font-mono font-extrabold text-slate-100 tabular-nums mt-1">
+                  {new Intl.NumberFormat('ru-RU', { notation: 'compact', maximumFractionDigits: 2 }).format(detailedStats.totalWagered)}
+                </div>
+                <div className="text-[10px] font-mono text-slate-400 mt-1">
+                  На спин:{' '}
+                  <span className={detailedStats.profitPerSpin >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                    {detailedStats.profitPerSpin >= 0 ? '+' : ''}{detailedStats.profitPerSpin.toLocaleString('ru-RU')} ₽
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Balance Chart */}
+            <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-4">
               <div className="flex justify-between items-center mb-3">
-                <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">График Баланса</div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-slate-300 uppercase tracking-wider font-bold">Кривая баланса</span>
+                  <span className="text-[10px] font-mono text-slate-500">Пик: {Math.floor(detailedStats.peakBankroll).toLocaleString('ru-RU')} ₽</span>
+                </div>
                 <button
                   onClick={exportSessionLogs}
-                  className="flex items-center gap-1 text-[10px] font-bold tracking-widest uppercase px-2.5 py-1 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white transition-colors"
+                  className="flex items-center gap-1.5 text-[10px] font-bold tracking-wider uppercase px-2.5 py-1.5 rounded-lg bg-[#090C12] border border-white/[0.08] hover:border-white/20 text-slate-300 hover:text-white transition-colors cursor-pointer"
                 >
                   <Download size={12} /> Экспорт JSON
                 </button>
               </div>
               <div className="h-44 w-full">
-                <Line data={chartData} options={chartOptions as any} />
+                <Line data={chartData} options={chartOptions} />
               </div>
             </div>
 
-            {/* Analytics Stream (Apex Matrix, Skew, Skew 15, Alpha/Omega) */}
-            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4 space-y-3">
-              <div className="flex justify-between items-center border-b border-gray-800 pb-2">
-                <span className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Аналитика Потока</span>
-                <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-black border ${
-                  currentMode === 'DANGER' ? 'text-red-400 border-red-500/40' : 'text-emerald-400 border-emerald-500/40'
-                }`}>
-                  {currentMode === 'DANGER' ? 'DANGER' : `Уверенность: ${prediction.confidence}%`}
+            {/* Stream & Anomaly Intelligence */}
+            <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-4 space-y-3.5">
+              <div className="flex justify-between items-center pb-2.5 border-b border-white/[0.06]">
+                <span className="text-[11px] text-slate-300 uppercase tracking-wider font-bold">Монитор потока и аномалий</span>
+                <div className="flex items-center gap-2 text-[10px] font-mono">
+                  <span className="text-slate-400">Зебра: <strong className="text-emerald-400">{detailedStats.zebraRatio}%</strong></span>
+                  <span className="text-slate-600">•</span>
+                  <span className="text-slate-400">
+                    Текущая:{' '}
+                    <strong className={
+                      detailedStats.currentStreakColor === 'RED'
+                        ? 'text-rose-400'
+                        : detailedStats.currentStreakColor === 'ZERO'
+                        ? 'text-emerald-400'
+                        : 'text-white'
+                    }>
+                      {detailedStats.currentStreakColor === 'RED' ? 'К' : detailedStats.currentStreakColor === 'BLACK' ? 'Ч' : detailedStats.currentStreakColor === 'ZERO' ? 'З' : '-'} ×{detailedStats.currentStreakLength}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Rolling Skew Progress Bar (Window 15) */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-[11px] font-mono">
+                  <span className="text-rose-400 font-bold">Красное (15): {Math.round(localSkew.red)}%</span>
+                  <span className="text-slate-300 font-bold">Чёрное (15): {Math.round(localSkew.black)}%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+                  <div
+                    className="h-full bg-rose-500 transition-all duration-300"
+                    style={{ width: `${Math.round(localSkew.red)}%` }}
+                  />
+                  <div
+                    className="h-full bg-slate-400 transition-all duration-300"
+                    style={{ width: `${Math.round(localSkew.black)}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Transparent Diagnostic Grid */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 text-xs font-mono">
+                <div className="bg-[#090C12] border border-white/[0.06] rounded-xl p-2.5">
+                  <div className="text-[9px] text-slate-400 uppercase font-sans font-semibold mb-0.5">Альфа (окно 20)</div>
+                  <div className={`font-bold ${
+                    apexMatrix.alpha === 'RED' ? 'text-rose-400' : apexMatrix.alpha === 'BLACK' ? 'text-slate-200' : 'text-slate-400'
+                  }`}>
+                    {apexMatrix.alpha === 'RED'
+                      ? `Красное · ${alphaStrength20.pct}%`
+                      : apexMatrix.alpha === 'BLACK'
+                      ? `Чёрное · ${alphaStrength20.pct}%`
+                      : `Нейтрально · ${alphaStrength20.pct}%`}
+                  </div>
+                </div>
+
+                <div className="bg-[#090C12] border border-white/[0.06] rounded-xl p-2.5">
+                  <div className="text-[9px] text-slate-400 uppercase font-sans font-semibold mb-0.5">Частота Зеро</div>
+                  <div className={`font-bold ${
+                    zeroDiffWarning ? 'text-rose-400' : detailedStats.zeroRateExact > 4.5 ? 'text-amber-400' : 'text-emerald-400'
+                  }`}>
+                    {detailedStats.zeroCount}/{detailedStats.totalSpins} ({detailedStats.zeroRateExact}%)
+                  </div>
+                </div>
+
+                <div className="bg-[#090C12] border border-white/[0.06] rounded-xl p-2.5">
+                  <div className="text-[9px] text-slate-400 uppercase font-sans font-semibold mb-0.5">Ср. шаг до Зеро</div>
+                  <div className="font-bold text-slate-200">{detailedStats.avgZeroFrequency}</div>
+                </div>
+
+                <div className="bg-[#090C12] border border-white/[0.06] rounded-xl p-2.5">
+                  <div className="text-[9px] text-slate-400 uppercase font-sans font-semibold mb-0.5">Глобально / Пики</div>
+                  <div className="font-bold text-slate-200">
+                    {Math.round(globalSkew.red)}/{Math.round(globalSkew.black)} · {apexMatrix.maxStreakRed}:{apexMatrix.maxStreakBlack}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Recent History Rail */}
+            <div className="bg-[#0E131D] border border-white/[0.07] rounded-2xl p-4 space-y-2.5">
+              <div className="flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                <span>Лента исходов (последние 30)</span>
+                <span className="font-mono text-slate-500">
+                  К {detailedStats.redCount} · Ч {detailedStats.blackCount} · З {detailedStats.zeroCount}
                 </span>
               </div>
-
-              <div className="grid grid-cols-2 gap-3 text-xs font-mono">
-                <div>
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Глобально</div>
-                  <div className="text-gray-300 font-bold">
-                    К {Math.round(globalSkew.red)}% / Ч {Math.round(globalSkew.black)}%
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Локально (15)</div>
-                  <div className="text-gray-300 font-bold">
-                    К {Math.round(localSkew.red)}% / Ч {Math.round(localSkew.black)}%
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Альфа-Цвет</div>
-                  <div className={`font-bold ${apexMatrix.alpha === 'RED' ? 'text-red-500' : apexMatrix.alpha === 'BLACK' ? 'text-gray-300' : 'text-gray-500'}`}>
-                    {apexMatrix.alpha === 'RED' ? 'КРАСНОЕ' : apexMatrix.alpha === 'BLACK' ? 'ЧЁРНОЕ' : 'НЕТ'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Макс. Серии (20)</div>
-                  <div className="text-gray-300 font-bold">
-                    К: {apexMatrix.maxStreakRed} / Ч: {apexMatrix.maxStreakBlack}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Распределение</div>
-                  <div className="flex gap-1.5 font-bold">
-                    <span className="text-red-500">{detailedStats.redCount} ({detailedStats.redPct}%)</span>
-                    <span className="text-gray-400">{detailedStats.blackCount} ({detailedStats.blackPct}%)</span>
-                    <span className="text-emerald-500">{detailedStats.zeroCount} ({detailedStats.zeroPct}%)</span>
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Текущая Серия</div>
-                  <div className="text-white font-bold">
-                    {detailedStats.currentStreakColor === 'RED' ? 'Красное' : detailedStats.currentStreakColor === 'BLACK' ? 'Чёрное' : detailedStats.currentStreakColor === 'ZERO' ? 'Зеро' : '-'} : {detailedStats.currentStreakLength}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Deep Stats (Streak Avg, Zebra %, Zero Frequency) */}
-            <div className="bg-gray-900/60 border border-gray-800 rounded-2xl p-4">
-              <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold mb-3">Глубокая Статистика</div>
-              <div className="grid grid-cols-3 gap-2 text-center font-mono">
-                <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Ср. длина серии</div>
-                  <div className="text-white font-bold text-sm">{detailedStats.avgStreakLength}</div>
-                </div>
-                <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Коэф. Зебры</div>
-                  <div className="text-emerald-400 font-bold text-sm">{detailedStats.zebraRatio}%</div>
-                </div>
-                <div className="bg-black/50 p-2 rounded-xl border border-gray-800">
-                  <div className="text-[9px] text-gray-500 uppercase font-sans font-bold">Частота Зеро</div>
-                  <div className="text-yellow-400 font-bold text-sm">{detailedStats.avgZeroFrequency}</div>
-                </div>
-              </div>
-            </div>
-
-            {/* History Rail */}
-            <div className="space-y-1.5">
-              <div className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">История спинов (последние 30)</div>
               <div className="flex gap-2 overflow-x-auto py-1 scrollbar-hide">
-                {history.slice(-30).map(h => (
-                  <HistoryIcon key={h.id} outcome={h.outcome} />
-                ))}
+                {history.length === 0 ? (
+                  <span className="text-xs text-slate-500 font-mono">Ожидание первого спина...</span>
+                ) : (
+                  history.slice(-30).map(h => <HistoryIcon key={h.id} entry={h} />)
+                )}
               </div>
             </div>
           </div>
@@ -1203,16 +1448,16 @@ export default function MatreshkaQuantum() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
           >
             <motion.div
-              initial={{ scale: 0.9, y: 20 }}
+              initial={{ scale: 0.94, y: 16 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-gray-900 border border-gray-800 p-6 rounded-3xl max-w-sm w-full space-y-4"
+              className="bg-[#0E131D] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl"
             >
-              <div className="flex justify-between items-center border-b border-gray-800 pb-3">
-                <h3 className="font-bold text-sm uppercase tracking-wider text-white">Выбор Режима Агрессии v12.5.1</h3>
-                <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-white cursor-pointer">✕</button>
+              <div className="flex justify-between items-center border-b border-white/[0.07] pb-3">
+                <h3 className="font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v12.5.1</h3>
+                <button onClick={() => setShowProfileModal(false)} className="text-slate-400 hover:text-white cursor-pointer">✕</button>
               </div>
 
               <div className="space-y-2.5">
@@ -1231,43 +1476,43 @@ export default function MatreshkaQuantum() {
                     <>
                       <button
                         onClick={() => { setStrategyProfile('APEX_IDEAL'); setShowProfileModal(false); }}
-                        className={`w-full p-3 rounded-2xl border text-left transition-all cursor-pointer ${
-                          strategyProfile === 'APEX_IDEAL' ? 'bg-emerald-500/20 border-emerald-500 text-white' : 'bg-black/40 border-gray-800 text-gray-400'
+                        className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                          strategyProfile === 'APEX_IDEAL' ? 'bg-emerald-500/15 border-emerald-500/60 text-white' : 'bg-[#090C12] border-white/[0.07] text-slate-400 hover:border-white/20'
                         }`}
                       >
                         <div className="font-bold text-emerald-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Sparkles size={14} /> APEX OPT (Высокий EV + Броня штормов)
+                          <Sparkles size={14} /> APEX OPT · Основной
                         </div>
-                        <div className="text-[11px] text-gray-300">
-                          Без кулдауна + Zebra Lock. Зебра {zApex.baseBet.toLocaleString('ru-RU')} ₽ ({zApex.targetSteps} ш.), Переход {tApex.baseBet.toLocaleString('ru-RU')} ₽ ({tApex.targetSteps} ш.), Опасность {dApex.baseBet.toLocaleString('ru-RU')} ₽ ({dApex.targetSteps} ш.).
+                        <div className="text-[11px] text-slate-300 font-mono">
+                          Z: {zApex.baseBet.toLocaleString('ru-RU')} ₽ ({zApex.targetSteps}ш) · T: {tApex.baseBet.toLocaleString('ru-RU')} ₽ ({tApex.targetSteps}ш) · D: {dApex.baseBet.toLocaleString('ru-RU')} ₽ ({dApex.targetSteps}ш)
                         </div>
                       </button>
 
                       <button
                         onClick={() => { setStrategyProfile('TURBO_HARVEST'); setShowProfileModal(false); }}
-                        className={`w-full p-3 rounded-2xl border text-left transition-all cursor-pointer ${
-                          strategyProfile === 'TURBO_HARVEST' ? 'bg-amber-500/20 border-amber-500 text-white' : 'bg-black/40 border-gray-800 text-gray-400'
+                        className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                          strategyProfile === 'TURBO_HARVEST' ? 'bg-amber-500/15 border-amber-500/60 text-white' : 'bg-[#090C12] border-white/[0.07] text-slate-400 hover:border-white/20'
                         }`}
                       >
                         <div className="font-bold text-amber-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Zap size={14} /> TURBO HARVEST (Макс. темп 7-8 шагов)
+                          <Zap size={14} /> TURBO · Агрессивный разгон
                         </div>
-                        <div className="text-[11px] text-gray-300">
-                          Форсированный разгон до ~1.4M/ч (повышенный риск). Зебра {zTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({zTurbo.targetSteps} ш.), Переход {tTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({tTurbo.targetSteps} ш.), Опасность {dTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({dTurbo.targetSteps} ш.).
+                        <div className="text-[11px] text-slate-300 font-mono">
+                          Z: {zTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({zTurbo.targetSteps}ш) · T: {tTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({tTurbo.targetSteps}ш) · D: {dTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({dTurbo.targetSteps}ш)
                         </div>
                       </button>
 
                       <button
                         onClick={() => { setStrategyProfile('SHIELD_CONSERVATIVE'); setShowProfileModal(false); }}
-                        className={`w-full p-3 rounded-2xl border text-left transition-all cursor-pointer ${
-                          strategyProfile === 'SHIELD_CONSERVATIVE' ? 'bg-blue-500/20 border-blue-500 text-white' : 'bg-black/40 border-gray-800 text-gray-400'
+                        className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                          strategyProfile === 'SHIELD_CONSERVATIVE' ? 'bg-sky-500/15 border-sky-500/60 text-white' : 'bg-[#090C12] border-white/[0.07] text-slate-400 hover:border-white/20'
                         }`}
                       >
-                        <div className="font-bold text-blue-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Shield size={14} /> SHIELD ULTRA (Броня 10 шагов)
+                        <div className="font-bold text-sky-400 text-xs flex items-center gap-1.5 mb-1">
+                          <Shield size={14} /> SHIELD · Максимальная броня
                         </div>
-                        <div className="text-[11px] text-gray-300">
-                          Максимальная выживаемость. Зебра {zShield.baseBet.toLocaleString('ru-RU')} ₽ ({zShield.targetSteps} ш.), Переход {tShield.baseBet.toLocaleString('ru-RU')} ₽ ({tShield.targetSteps} ш.), Опасность {dShield.baseBet.toLocaleString('ru-RU')} ₽ ({dShield.targetSteps} ш.).
+                        <div className="text-[11px] text-slate-300 font-mono">
+                          Z: {zShield.baseBet.toLocaleString('ru-RU')} ₽ ({zShield.targetSteps}ш) · T: {tShield.baseBet.toLocaleString('ru-RU')} ₽ ({tShield.targetSteps}ш) · D: {dShield.baseBet.toLocaleString('ru-RU')} ₽ ({dShield.targetSteps}ш)
                         </div>
                       </button>
                     </>
@@ -1286,22 +1531,22 @@ export default function MatreshkaQuantum() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
           >
             <motion.div
-              initial={{ scale: 0.9, y: 20 }}
+              initial={{ scale: 0.94, y: 16 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-gray-900 border border-emerald-500/30 p-8 rounded-3xl max-w-sm w-full text-center shadow-[0_0_50px_rgba(16,185,129,0.15)]"
+              className="bg-[#0E131D] border border-emerald-500/35 p-7 rounded-3xl max-w-sm w-full text-center shadow-[0_0_50px_rgba(16,185,129,0.18)]"
             >
-              <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
-                <CheckCircle2 className="text-emerald-400" size={32} />
+              <div className="w-14 h-14 bg-emerald-500/15 rounded-full flex items-center justify-center mx-auto mb-4 border border-emerald-500/30">
+                <CheckCircle2 className="text-emerald-400" size={28} />
               </div>
-              <h2 className="text-2xl font-black tracking-tight mb-1 text-white">ЦЕЛЬ ДОСТИГНУТА</h2>
-              <p className="text-gray-400 mb-6 text-xs">Зафиксирован профит +25%! Рекомендуется забрать выигрыш.</p>
+              <h2 className="text-xl font-black tracking-tight mb-1 text-white">ЦЕЛЬ +25% ДОСТИГНУТА</h2>
+              <p className="text-slate-400 mb-5 text-xs">Отличный результат. Можно зафиксировать прибыль или продолжить сессию.</p>
 
-              <div className="bg-black/60 rounded-2xl p-4 mb-6 border border-gray-800 font-mono">
-                <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1 font-bold">ПРОФИТ СЕССИИ</div>
-                <div className="text-3xl text-emerald-400 font-black">+{Math.floor(profit).toLocaleString('ru-RU')} ₽</div>
+              <div className="bg-[#090C12] rounded-2xl p-4 mb-5 border border-white/[0.07] font-mono">
+                <div className="text-[10px] text-slate-400 uppercase tracking-widest mb-1 font-bold">ПРОФИТ СЕССИИ</div>
+                <div className="text-3xl text-emerald-400 font-black tabular-nums">+{Math.floor(profit).toLocaleString('ru-RU')} ₽</div>
               </div>
 
               <div className="space-y-2">
@@ -1310,28 +1555,17 @@ export default function MatreshkaQuantum() {
                     saveCurrentSession();
                     exportSessionLogs();
                     setShowSummary(false);
-                    setInitialBankroll(0);
-                    setHistory([]);
-                    setCurrentStep(1);
-                    setAttackStep(0);
-                    setCdt(0);
-                    setCurrentMode('ZEBRA');
-                    setPreviousMode('ZEBRA');
-                    setSpinsSinceDangerExit(999);
-                    setSpinsInCurrentMode(0);
-                    setSequenceStartMode('ZEBRA');
-                    setSequenceTargetSteps(undefined);
-                    localStorage.removeItem('matreshka_quantum_v12_state');
+                    resetFullSessionState();
                   }}
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 rounded-xl uppercase tracking-widest transition-colors text-xs cursor-pointer shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3.5 rounded-xl uppercase tracking-wider transition-colors text-xs cursor-pointer"
                 >
-                  Зафиксировать и Начать Заново
+                  Зафиксировать и выйти
                 </button>
                 <button
                   onClick={() => setShowSummary(false)}
-                  className="w-full py-3 text-gray-400 hover:text-white text-xs font-bold uppercase tracking-widest transition-colors"
+                  className="w-full py-2.5 text-slate-400 hover:text-white text-xs font-semibold uppercase tracking-wider transition-colors cursor-pointer"
                 >
-                  Продолжить Игру
+                  Продолжить игру
                 </button>
               </div>
             </motion.div>
@@ -1346,23 +1580,23 @@ export default function MatreshkaQuantum() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
           >
             <motion.div
-              initial={{ scale: 0.9, y: 20 }}
+              initial={{ scale: 0.94, y: 16 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-gray-900 border border-red-500/40 p-8 rounded-3xl max-w-sm w-full text-center shadow-[0_0_50px_rgba(239,68,68,0.2)]"
+              className="bg-[#0E131D] border border-rose-500/35 p-7 rounded-3xl max-w-sm w-full text-center shadow-[0_0_50px_rgba(244,63,94,0.18)]"
             >
-              <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 border border-red-500/30">
-                <AlertTriangle className="text-red-500" size={32} />
+              <div className="w-14 h-14 bg-rose-500/15 rounded-full flex items-center justify-center mx-auto mb-4 border border-rose-500/30">
+                <AlertTriangle className="text-rose-400" size={28} />
               </div>
               <h2 className="text-xl font-black tracking-tight mb-1 text-white">ЗАВЕРШИТЬ СЕССИЮ?</h2>
-              <p className="text-gray-400 mb-6 text-xs">Текущие результаты будут сохранены в архив сессий.</p>
+              <p className="text-slate-400 mb-6 text-xs">Результаты и журнал спинов будут сохранены.</p>
 
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowResetConfirm(false)}
-                  className="flex-1 py-3 rounded-xl border border-gray-700 text-white font-bold uppercase tracking-widest hover:bg-gray-800 transition-colors text-xs cursor-pointer"
+                  className="flex-1 py-3 rounded-xl border border-white/10 text-slate-200 font-bold uppercase tracking-wider hover:bg-white/[0.05] transition-colors text-xs cursor-pointer"
                 >
                   Отмена
                 </button>
@@ -1371,20 +1605,9 @@ export default function MatreshkaQuantum() {
                     saveCurrentSession();
                     exportSessionLogs();
                     setShowResetConfirm(false);
-                    setInitialBankroll(0);
-                    setHistory([]);
-                    setCurrentStep(1);
-                    setAttackStep(0);
-                    setCdt(0);
-                    setCurrentMode('ZEBRA');
-                    setPreviousMode('ZEBRA');
-                    setSpinsSinceDangerExit(999);
-                    setSpinsInCurrentMode(0);
-                    setSequenceStartMode('ZEBRA');
-                    setSequenceTargetSteps(undefined);
-                    localStorage.removeItem('matreshka_quantum_v12_state');
+                    resetFullSessionState();
                   }}
-                  className="flex-1 bg-red-600 hover:bg-red-500 text-white font-black py-3 rounded-xl uppercase tracking-widest transition-colors text-xs cursor-pointer shadow-[0_0_20px_rgba(239,68,68,0.3)]"
+                  className="flex-1 bg-rose-600 hover:bg-rose-500 text-white font-bold py-3 rounded-xl uppercase tracking-wider transition-colors text-xs cursor-pointer"
                 >
                   Завершить
                 </button>
