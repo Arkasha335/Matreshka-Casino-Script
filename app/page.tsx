@@ -105,7 +105,6 @@ export default function MatreshkaQuantum() {
   const [sequenceStartMode, setSequenceStartMode] = useState<ServerMode>('ZEBRA');
   const [sequenceTargetSteps, setSequenceTargetSteps] = useState<number | undefined>(undefined);
   const [strategyProfile, setStrategyProfile] = useState<StrategyProfile>('APEX_IDEAL');
-  const [tableLimit, setTableLimit] = useState<number>(GAME_RULES.VIP_MAX_BET);
 
   const [sessionStartTime, setSessionStartTime] = useState<number>(() => Date.now());
   const [now, setNow] = useState<number>(() => Date.now());
@@ -135,18 +134,17 @@ export default function MatreshkaQuantum() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.initialBankroll) setInitialBankroll(parsed.initialBankroll);
+        if (parsed.initialBankroll) setInitialBankroll(Math.floor(parsed.initialBankroll));
         if (parsed.history) setHistory(parsed.history);
         if (parsed.currentStep) setCurrentStep(parsed.currentStep);
         if (parsed.attackStep !== undefined) setAttackStep(parsed.attackStep);
-        if (parsed.cdt !== undefined) setCdt(parsed.cdt);
+        if (parsed.cdt !== undefined) setCdt(Math.floor(parsed.cdt));
         if (parsed.currentMode) setCurrentMode(parsed.currentMode);
         if (parsed.previousMode) setPreviousMode(parsed.previousMode);
         if (parsed.spinsSinceDangerExit !== undefined) setSpinsSinceDangerExit(parsed.spinsSinceDangerExit);
         if (parsed.spinsInCurrentMode !== undefined) setSpinsInCurrentMode(parsed.spinsInCurrentMode);
         if (parsed.sessionStartTime) setSessionStartTime(parsed.sessionStartTime);
         if (parsed.strategyProfile) setStrategyProfile(parsed.strategyProfile);
-        if (parsed.tableLimit) setTableLimit(parsed.tableLimit);
         if (parsed.sequenceStartMode) setSequenceStartMode(parsed.sequenceStartMode);
         if (parsed.sequenceTargetSteps !== undefined) setSequenceTargetSteps(parsed.sequenceTargetSteps);
       } catch (e) {
@@ -177,8 +175,7 @@ export default function MatreshkaQuantum() {
         sequenceStartMode,
         sequenceTargetSteps,
         sessionStartTime,
-        strategyProfile,
-        tableLimit
+        strategyProfile
       }));
     }
   }, [
@@ -195,8 +192,7 @@ export default function MatreshkaQuantum() {
     sequenceStartMode,
     sequenceTargetSteps,
     sessionStartTime,
-    strategyProfile,
-    tableLimit
+    strategyProfile
   ]);
 
   // Derived current bankroll
@@ -205,7 +201,7 @@ export default function MatreshkaQuantum() {
   }, [initialBankroll, history]);
 
   const profit = currentBankroll - initialBankroll;
-  const sessionROI = initialBankroll > 0 ? ((profit / initialBankroll) * 100).toFixed(2) : '0.00';
+  const sessionROI = initialBankroll > 0 ? (Math.trunc((profit / initialBankroll) * 10000) / 100).toFixed(2) : '0.00';
 
   // Engine Params & Prediction
   const cycleCapital = currentBankroll + cdt;
@@ -217,11 +213,10 @@ export default function MatreshkaQuantum() {
       strategyProfile,
       effectiveMode,
       currentBankroll,
-      tableLimit,
       cdt,
       cdt > 0 ? sequenceTargetSteps : undefined
     );
-  }, [strategyProfile, effectiveMode, currentBankroll, tableLimit, cdt, sequenceTargetSteps]);
+  }, [strategyProfile, effectiveMode, currentBankroll, cdt, sequenceTargetSteps]);
 
   const prevBetAmount = useMemo(() => {
     if (currentStep <= 1 || history.length === 0) return undefined;
@@ -235,10 +230,9 @@ export default function MatreshkaQuantum() {
       effectiveMode,
       engineParams,
       currentBankroll,
-      prevBetAmount,
-      tableLimit
+      prevBetAmount
     );
-  }, [cdt, currentStep, effectiveMode, engineParams, currentBankroll, prevBetAmount, tableLimit]);
+  }, [cdt, currentStep, effectiveMode, engineParams, currentBankroll, prevBetAmount]);
 
   const effectiveBet = manualBet !== null ? manualBet : nextCalculatedBet;
 
@@ -292,9 +286,8 @@ export default function MatreshkaQuantum() {
       nextStep = currentStep + 1; // Zero increments step
     } else if (recommendation === outcome) {
       isWin = true;
-      netProfit = Math.round(effectiveBet * GAME_RULES.WIN_NET_RATIO); // 2% casino tax
-      nextCdt = Math.max(0, Math.round(nextCdt - netProfit));
-      if (nextCdt < 10) nextCdt = 0;
+      netProfit = BankrollManager.calcNetWin(effectiveBet); // Exact server floor payout under 2% fee
+      nextCdt = Math.max(0, nextCdt - netProfit);
 
       if (nextCdt === 0) {
         nextStep = 1;
@@ -350,14 +343,13 @@ export default function MatreshkaQuantum() {
       const startCfg = BankrollManager.getCalibratedLadderConfig(
         strategyProfile,
         currentMode,
-        currentBankroll,
-        tableLimit
+        currentBankroll
       );
       setSequenceStartMode(currentMode);
       setSequenceTargetSteps(startCfg.targetSteps);
     }
 
-    if (effectiveBet >= tableLimit) {
+    if (effectiveBet >= GAME_RULES.MAX_BET) {
       playAlert();
     }
 
@@ -379,7 +371,7 @@ export default function MatreshkaQuantum() {
       recommended_action: recommendation,
       current_bet: effectiveBet,
       current_step: currentStep,
-      current_balance: Math.round(currentBankroll + netProfit),
+      current_balance: Math.floor(currentBankroll + netProfit),
       server_state_detected: prediction.state,
       time_since_last_spin: timeSinceLast,
       current_mode: effectiveMode,
@@ -412,8 +404,7 @@ export default function MatreshkaQuantum() {
     prediction.state,
     initialBankroll,
     showSummary,
-    strategyProfile,
-    tableLimit
+    strategyProfile
   ]);
 
   // Undo Handler
@@ -457,8 +448,7 @@ export default function MatreshkaQuantum() {
         cdtVal += entry.betAmount;
         step++;
       } else if (isWin) {
-        cdtVal = Math.max(0, Math.round(cdtVal - Math.round(entry.betAmount * GAME_RULES.WIN_NET_RATIO)));
-        if (cdtVal < 10) cdtVal = 0;
+        cdtVal = Math.max(0, cdtVal - BankrollManager.calcNetWin(entry.betAmount));
         if (cdtVal === 0) {
           step = 1;
           aStep = 0;
@@ -501,8 +491,7 @@ export default function MatreshkaQuantum() {
         seqTargetStepsVal = BankrollManager.getCalibratedLadderConfig(
           strategyProfile,
           startModeThisSpin,
-          startBankThisSpin,
-          tableLimit
+          startBankThisSpin
         ).targetSteps;
       }
     }
@@ -516,7 +505,7 @@ export default function MatreshkaQuantum() {
     setSpinsInCurrentMode(spinsInCurrentModeVal);
     setSequenceStartMode(seqStartVal);
     setSequenceTargetSteps(seqTargetStepsVal);
-  }, [history, sessionLogs, initialBankroll, strategyProfile, tableLimit]);
+  }, [history, sessionLogs, initialBankroll, strategyProfile]);
 
   // Keyboard Hotkeys
   useEffect(() => {
@@ -633,9 +622,8 @@ export default function MatreshkaQuantum() {
 
   // Onboarding Screen
   if (initialBankroll === 0) {
-    const parsedBankroll = Number(setupVal) || 0;
-    const params = BankrollManager.getEngineParams(strategyProfile, 'ZEBRA', parsedBankroll, tableLimit);
-    const formatLimitShort = (lim: number) => `${(lim / 1000000).toFixed(lim % 1000000 === 0 ? 0 : 1)}М`;
+    const parsedBankroll = Math.floor(Number(setupVal) || 0);
+    const params = BankrollManager.getEngineParams(strategyProfile, 'ZEBRA', parsedBankroll);
 
     return (
       <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4 font-sans text-white">
@@ -647,13 +635,13 @@ export default function MatreshkaQuantum() {
           <div className="flex items-center justify-center gap-2 mb-2">
             <Sparkles className="text-emerald-400" size={20} />
             <h1 className="text-xl font-black text-white tracking-widest uppercase">MATRESHKA QUANTUM</h1>
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.5 SOLVER</span>
+            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-bold px-2 py-0.5 rounded border border-emerald-500/30">v12.5.1 SOLVER</span>
           </div>
           <p className="text-gray-400 text-center text-xs mb-3">
-            50 слотов • 2 Зеро (4%) • Комиссия 2% • Точный решатель до {tableLimit.toLocaleString('ru-RU')} ₽
+            50 слотов • 2 Зеро (4%) • Комиссия 2% (вниз) • Лимит 1 000 000 ₽
           </p>
           <div className="bg-black/40 border border-gray-800 rounded-xl p-2.5 mb-5 text-[11px] text-gray-400 text-center font-mono">
-            Мин. ставка: <span className="text-white font-bold">1 000 ₽</span> • Потолок: <span className="text-emerald-400 font-bold">{formatLimitShort(tableLimit)} ₽</span> • {params.stepsToLimit} шагов
+            Мин. ставка: <span className="text-white font-bold">1 000 ₽</span> • Потолок: <span className="text-emerald-400 font-bold">1 000 000 ₽</span> • {params.stepsToLimit} шагов
           </div>
 
           <div className="space-y-5">
@@ -666,34 +654,6 @@ export default function MatreshkaQuantum() {
                 className="w-full bg-black/70 border border-gray-800 text-emerald-400 text-3xl p-4 rounded-2xl focus:outline-none focus:border-emerald-500 transition-colors font-mono text-center font-bold"
                 placeholder="1000000"
               />
-            </div>
-
-            <div>
-              <label className="block text-gray-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Лимит / Потолок Стола (₽)</label>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTableLimit(GAME_RULES.MAX_BET)}
-                  className={`py-2.5 px-3 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer ${
-                    tableLimit === GAME_RULES.MAX_BET
-                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.2)]'
-                      : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  1 000 000 ₽ <span className="block text-[9px] font-sans text-gray-400">Стандарт CRMP</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTableLimit(GAME_RULES.VIP_MAX_BET)}
-                  className={`py-2.5 px-3 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer ${
-                    tableLimit === GAME_RULES.VIP_MAX_BET
-                      ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.2)]'
-                      : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  2 000 000 ₽ <span className="block text-[9px] font-sans text-gray-400">VIP / Максимальный EV</span>
-                </button>
-              </div>
             </div>
 
             <div>
@@ -710,7 +670,7 @@ export default function MatreshkaQuantum() {
                 >
                   <Sparkles size={16} />
                   <span>APEX OPT</span>
-                  <span className="text-[9px] font-mono text-gray-400">9-10 шагов</span>
+                  <span className="text-[9px] font-mono text-gray-400">8-10 шагов</span>
                 </button>
 
                 <button
@@ -724,7 +684,7 @@ export default function MatreshkaQuantum() {
                 >
                   <Zap size={16} />
                   <span>TURBO</span>
-                  <span className="text-[9px] font-mono text-gray-400">8-9 шагов</span>
+                  <span className="text-[9px] font-mono text-gray-400">7-8 шагов</span>
                 </button>
 
                 <button
@@ -747,12 +707,12 @@ export default function MatreshkaQuantum() {
               <div className="bg-black/50 p-4 rounded-2xl border border-gray-800 text-xs text-gray-300 space-y-1.5 font-mono">
                 <div className="flex justify-between">
                   <span className="text-gray-400">Базовая ставка (1-й шаг):</span>
-                  <span className="font-bold text-white">{Math.round(params.baseBet).toLocaleString('ru-RU')} ₽</span>
+                  <span className="font-bold text-white">{Math.floor(params.baseBet).toLocaleString('ru-RU')} ₽</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Финальный шаг ({params.stepsToLimit}-й):</span>
+                  <span className="text-gray-400">Финальная ставка ({params.stepsToLimit}-й шаг):</span>
                   <span className="font-bold text-amber-400">
-                    {Math.round(params.projectedTerminalBet ?? tableLimit).toLocaleString('ru-RU')} ₽
+                    {Math.floor(params.projectedTerminalBet ?? GAME_RULES.MAX_BET).toLocaleString('ru-RU')} ₽
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -768,13 +728,13 @@ export default function MatreshkaQuantum() {
 
             {strategyProfile === 'TURBO_HARVEST' && parsedBankroll > 0 && parsedBankroll < 3000000 && (
               <div className="bg-amber-950/40 border border-amber-500/40 rounded-xl p-2.5 text-[11px] text-amber-200 text-center">
-                Внимание: при банке ниже 3 000 000 ₽ режим TURBO (8 шагов) имеет повышенный риск проигрыша на часовой дистанции.
+                При банке ниже 3 000 000 ₽ в TURBO автоматически включается защитная ступень (8 шагов), но на часовой дистанции безопаснее APEX OPT.
               </div>
             )}
 
             <button
               onClick={() => {
-                const val = Number(setupVal);
+                const val = Math.floor(Number(setupVal));
                 if (val > 0) {
                   setInitialBankroll(val);
                   setHistory([]);
@@ -793,7 +753,7 @@ export default function MatreshkaQuantum() {
               disabled={!setupVal || Number(setupVal) <= 0}
               className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-black py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_0_25px_rgba(16,185,129,0.3)] text-sm cursor-pointer"
             >
-              Запустить Движок v12.5
+              Запустить Движок v12.5.1
             </button>
 
             {savedSessions.length > 0 && (
@@ -807,7 +767,7 @@ export default function MatreshkaQuantum() {
                         <div className="text-[10px] text-gray-500">{Math.round(s.durationMs / 60000)} мин | Зеро: {s.zeroCount}</div>
                       </div>
                       <div className={`font-mono font-bold ${s.profit >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
-                        {s.profit >= 0 ? '+' : ''}{Math.round(s.profit).toLocaleString('ru-RU')} ₽
+                        {s.profit >= 0 ? '+' : ''}{(s.profit >= 0 ? Math.floor(s.profit) : Math.trunc(s.profit)).toLocaleString('ru-RU')} ₽
                       </div>
                     </div>
                   ))}
@@ -830,18 +790,18 @@ export default function MatreshkaQuantum() {
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12.5</h1>
+              <h1 className="text-[10px] font-bold tracking-widest text-gray-400 uppercase">MATRESHKA QUANTUM v12.5.1</h1>
               <span className="text-[10px] font-mono text-gray-400 bg-gray-900 border border-gray-800 px-1.5 py-0.5 rounded">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
               </span>
             </div>
             <div className={`text-2xl font-mono font-black tracking-tight ${profit >= 0 ? 'text-emerald-400' : 'text-red-500'}`}>
-              {profit >= 0 ? '+' : ''}{Math.round(profit).toLocaleString('ru-RU')} ₽
+              {profit >= 0 ? '+' : ''}{Math.floor(profit).toLocaleString('ru-RU')} ₽
               <span className="text-xs text-gray-500 font-bold ml-1.5 font-sans">({sessionROI}%)</span>
             </div>
             <div className="text-[11px] text-gray-400 font-mono">
-              Баланс: <span className="font-bold text-white">{Math.round(currentBankroll).toLocaleString('ru-RU')} ₽</span>
+              Баланс: <span className="font-bold text-white">{Math.floor(currentBankroll).toLocaleString('ru-RU')} ₽</span>
             </div>
           </div>
 
@@ -849,7 +809,7 @@ export default function MatreshkaQuantum() {
             <button
               onClick={() => setShowProfileModal(true)}
               className="text-gray-400 hover:text-white transition-colors p-2.5 bg-gray-900 rounded-xl border border-gray-800"
-              title="Выбор режима агрессии и потолка стола"
+              title="Выбор режима агрессии"
             >
               <Sliders size={18} />
             </button>
@@ -878,15 +838,9 @@ export default function MatreshkaQuantum() {
           <div className="flex items-center gap-2">
             <span>Мин: <strong className="text-white">1 000 ₽</strong></span>
             <span className="text-gray-600">•</span>
-            <button
-              onClick={() => setShowProfileModal(true)}
-              className="hover:text-white transition-colors cursor-pointer"
-              title="Изменить лимит стола"
-            >
-              Лимит: <strong className="text-amber-400">{tableLimit.toLocaleString('ru-RU')} ₽</strong>
-            </button>
+            <span>Лимит: <strong className="text-amber-400">1 000 000 ₽</strong></span>
             <span className="text-gray-600">•</span>
-            <span>Комиссия: <strong className="text-gray-300">2%</strong></span>
+            <span>Комиссия: <strong className="text-gray-300">2% (вниз)</strong></span>
           </div>
         </div>
       </div>
@@ -940,16 +894,16 @@ export default function MatreshkaQuantum() {
 
           {/* Mode Strategy Hint */}
           <div className="text-[10px] font-medium text-gray-400 text-center mb-1">
-            {effectiveMode === 'ZEBRA' && `✨ Чередование: макс. сбор прибыли (B₀ ${Math.round(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов • ${isZebraLocked ? 'Zebra Lock активен' : 'Высокий EV'}`}
-            {effectiveMode === 'TRANSITION' && `⚡ Переходная зона: баланс профита/риска (B₀ ${Math.round(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов`}
-            {effectiveMode === 'DANGER' && `🛡️ Аномалии / Zero: защита банка (B₀ ${Math.round(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов • Horizon Guard`}
+            {effectiveMode === 'ZEBRA' && `✨ Чередование: макс. сбор прибыли (B₀ ${Math.floor(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов • ${isZebraLocked ? 'Zebra Lock активен' : 'Высокий EV'}`}
+            {effectiveMode === 'TRANSITION' && `⚡ Переходная зона: баланс профита/риска (B₀ ${Math.floor(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов`}
+            {effectiveMode === 'DANGER' && `🛡️ Аномалии / Zero: защита банка (B₀ ${Math.floor(engineParams.baseBet).toLocaleString('ru-RU')} ₽) • ${engineParams.stepsToLimit} шагов • 980k Horizon Guard`}
           </div>
 
           {/* Dynamic Constant Multiplier Badge */}
           <div className="text-[10px] font-mono text-gray-400 bg-gray-900/80 border border-gray-800 px-2.5 py-0.5 rounded-full mb-1 flex items-center gap-1.5 shadow-sm">
             <span>Множитель X: <strong className="text-emerald-400 font-bold">{engineParams.growthFactor.toFixed(3)}x</strong></span>
             <span className="text-gray-600">•</span>
-            <span>Потолок {Math.round(engineParams.projectedTerminalBet ?? tableLimit).toLocaleString('ru-RU')} ₽ на шаге {engineParams.stepsToLimit}</span>
+            <span>Потолок {Math.floor(engineParams.projectedTerminalBet ?? GAME_RULES.MAX_BET).toLocaleString('ru-RU')} ₽ на шаге {engineParams.stepsToLimit}</span>
           </div>
 
           {/* Next Recommendation in Large Display */}
@@ -1018,11 +972,11 @@ export default function MatreshkaQuantum() {
             ) : (
               <div className="flex items-center gap-2">
                 <span className="text-3xl sm:text-4xl font-mono font-black text-white">
-                  {Math.round(effectiveBet).toLocaleString('ru-RU')} ₽
+                  {Math.floor(effectiveBet).toLocaleString('ru-RU')} ₽
                 </span>
                 <button
                   onClick={() => {
-                    setEditBetValue(Math.round(effectiveBet).toString());
+                    setEditBetValue(Math.floor(effectiveBet).toString());
                     setIsEditingBet(true);
                   }}
                   className="text-gray-500 hover:text-white transition-colors p-1"
@@ -1034,9 +988,9 @@ export default function MatreshkaQuantum() {
             )}
           </div>
 
-          {effectiveBet >= tableLimit && (
+          {effectiveBet >= GAME_RULES.MAX_BET && (
             <div className="mt-2 bg-red-600 text-white text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest animate-pulse">
-              ЛИМИТ СТОЛА ({tableLimit.toLocaleString('ru-RU')} ₽)
+              ЛИМИТ СТОЛА (1 000 000 ₽)
             </div>
           )}
         </motion.div>
@@ -1048,13 +1002,13 @@ export default function MatreshkaQuantum() {
           <div>
             <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Накопленный дефицит (CDT)</div>
             <div className={`text-xl font-mono font-black ${cdt === 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {Math.round(cdt).toLocaleString('ru-RU')} ₽
+              {Math.floor(cdt).toLocaleString('ru-RU')} ₽
             </div>
           </div>
           <div className="text-right">
             <div className="text-[10px] text-gray-400 uppercase tracking-widest font-bold">Прогноз EV / Час</div>
             <div className={`text-xl font-mono font-black ${detailedStats.profitPerHour >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {detailedStats.profitPerHour >= 0 ? '+' : ''}{Math.round(detailedStats.profitPerHour).toLocaleString('ru-RU')} ₽
+              {detailedStats.profitPerHour >= 0 ? '+' : ''}{Math.trunc(detailedStats.profitPerHour).toLocaleString('ru-RU')} ₽
             </div>
           </div>
         </div>
@@ -1105,12 +1059,12 @@ export default function MatreshkaQuantum() {
           <Undo2 size={15} /> Отменить Последний Ввод [Backspace / .]
         </button>
 
-            {/* Risk Meter (Dynamic Durability to Table Ceiling) */}
+            {/* Risk Meter (Dynamic Durability to 1M Ceiling) */}
             <div className="w-full bg-gray-900/60 rounded-2xl p-4 border border-gray-800">
               <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 mb-2.5 tracking-widest uppercase font-mono">
                 <span>Запас прочности: {currentStep} / {engineParams.stepsToLimit} шагов</span>
                 <span className={currentStep >= engineParams.stepsToLimit ? 'text-amber-400 font-black animate-pulse' : 'text-emerald-400'}>
-                  {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до потолка {(tableLimit / 1000000).toFixed(tableLimit % 1000000 === 0 ? 0 : 1)}М
+                  {Math.max(0, engineParams.stepsToLimit - currentStep)} шагов до потолка 1М
                 </span>
               </div>
               <div className="flex gap-1.5 h-3">
@@ -1133,7 +1087,7 @@ export default function MatreshkaQuantum() {
               </div>
               {currentStep >= engineParams.stepsToLimit && (
                 <div className="mt-2.5 bg-amber-500/20 border border-amber-500/50 rounded-xl p-2 text-center text-amber-300 text-[10px] font-black uppercase tracking-wider">
-                  ⚡ Терминальный шаг: ставка упирается в потолок ({Math.min(tableLimit, currentBankroll).toLocaleString('ru-RU')} ₽) для максимального съёма профита
+                  ⚡ Терминальный шаг: ставка упирается в потолок ({Math.min(GAME_RULES.MAX_BET, Math.floor(currentBankroll)).toLocaleString('ru-RU')} ₽) для максимального съёма профита
                 </div>
               )}
             </div>
@@ -1257,47 +1211,21 @@ export default function MatreshkaQuantum() {
               className="bg-gray-900 border border-gray-800 p-6 rounded-3xl max-w-sm w-full space-y-4"
             >
               <div className="flex justify-between items-center border-b border-gray-800 pb-3">
-                <h3 className="font-bold text-sm uppercase tracking-wider text-white">Настройки Движка v12.5</h3>
+                <h3 className="font-bold text-sm uppercase tracking-wider text-white">Выбор Режима Агрессии v12.5.1</h3>
                 <button onClick={() => setShowProfileModal(false)} className="text-gray-500 hover:text-white cursor-pointer">✕</button>
-              </div>
-
-              <div>
-                <div className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Лимит / Потолок Стола</div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setTableLimit(GAME_RULES.MAX_BET)}
-                    className={`py-2 px-3 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer ${
-                      tableLimit === GAME_RULES.MAX_BET
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                        : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
-                    }`}
-                  >
-                    1 000 000 ₽
-                  </button>
-                  <button
-                    onClick={() => setTableLimit(GAME_RULES.VIP_MAX_BET)}
-                    className={`py-2 px-3 rounded-xl border text-xs font-mono font-bold transition-all cursor-pointer ${
-                      tableLimit === GAME_RULES.VIP_MAX_BET
-                        ? 'bg-amber-500/20 border-amber-500 text-amber-300'
-                        : 'bg-black/40 border-gray-800 text-gray-400 hover:text-white'
-                    }`}
-                  >
-                    2 000 000 ₽
-                  </button>
-                </div>
               </div>
 
               <div className="space-y-2.5">
                 {(() => {
-                  const zApex = BankrollManager.getCalibratedLadderConfig('APEX_IDEAL', 'ZEBRA', cycleCapital, tableLimit);
-                  const tApex = BankrollManager.getCalibratedLadderConfig('APEX_IDEAL', 'TRANSITION', cycleCapital, tableLimit);
-                  const dApex = BankrollManager.getCalibratedLadderConfig('APEX_IDEAL', 'DANGER', cycleCapital, tableLimit);
-                  const zTurbo = BankrollManager.getCalibratedLadderConfig('TURBO_HARVEST', 'ZEBRA', cycleCapital, tableLimit);
-                  const tTurbo = BankrollManager.getCalibratedLadderConfig('TURBO_HARVEST', 'TRANSITION', cycleCapital, tableLimit);
-                  const dTurbo = BankrollManager.getCalibratedLadderConfig('TURBO_HARVEST', 'DANGER', cycleCapital, tableLimit);
-                  const zShield = BankrollManager.getCalibratedLadderConfig('SHIELD_CONSERVATIVE', 'ZEBRA', cycleCapital, tableLimit);
-                  const tShield = BankrollManager.getCalibratedLadderConfig('SHIELD_CONSERVATIVE', 'TRANSITION', cycleCapital, tableLimit);
-                  const dShield = BankrollManager.getCalibratedLadderConfig('SHIELD_CONSERVATIVE', 'DANGER', cycleCapital, tableLimit);
+                  const zApex = BankrollManager.getCalibratedLadderConfig('APEX_IDEAL', 'ZEBRA', cycleCapital);
+                  const tApex = BankrollManager.getCalibratedLadderConfig('APEX_IDEAL', 'TRANSITION', cycleCapital);
+                  const dApex = BankrollManager.getCalibratedLadderConfig('APEX_IDEAL', 'DANGER', cycleCapital);
+                  const zTurbo = BankrollManager.getCalibratedLadderConfig('TURBO_HARVEST', 'ZEBRA', cycleCapital);
+                  const tTurbo = BankrollManager.getCalibratedLadderConfig('TURBO_HARVEST', 'TRANSITION', cycleCapital);
+                  const dTurbo = BankrollManager.getCalibratedLadderConfig('TURBO_HARVEST', 'DANGER', cycleCapital);
+                  const zShield = BankrollManager.getCalibratedLadderConfig('SHIELD_CONSERVATIVE', 'ZEBRA', cycleCapital);
+                  const tShield = BankrollManager.getCalibratedLadderConfig('SHIELD_CONSERVATIVE', 'TRANSITION', cycleCapital);
+                  const dShield = BankrollManager.getCalibratedLadderConfig('SHIELD_CONSERVATIVE', 'DANGER', cycleCapital);
 
                   return (
                     <>
@@ -1308,7 +1236,7 @@ export default function MatreshkaQuantum() {
                         }`}
                       >
                         <div className="font-bold text-emerald-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Sparkles size={14} /> APEX OPT (Золотой стандарт EV)
+                          <Sparkles size={14} /> APEX OPT (Высокий EV + Броня штормов)
                         </div>
                         <div className="text-[11px] text-gray-300">
                           Без кулдауна + Zebra Lock. Зебра {zApex.baseBet.toLocaleString('ru-RU')} ₽ ({zApex.targetSteps} ш.), Переход {tApex.baseBet.toLocaleString('ru-RU')} ₽ ({tApex.targetSteps} ш.), Опасность {dApex.baseBet.toLocaleString('ru-RU')} ₽ ({dApex.targetSteps} ш.).
@@ -1322,10 +1250,10 @@ export default function MatreshkaQuantum() {
                         }`}
                       >
                         <div className="font-bold text-amber-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Zap size={14} /> TURBO HARVEST (Макс. темп 8 шагов)
+                          <Zap size={14} /> TURBO HARVEST (Макс. темп 7-8 шагов)
                         </div>
                         <div className="text-[11px] text-gray-300">
-                          Форсированный разгон прибыли (повышенный риск). Зебра {zTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({zTurbo.targetSteps} ш.), Переход {tTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({tTurbo.targetSteps} ш.), Опасность {dTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({dTurbo.targetSteps} ш.).
+                          Форсированный разгон до ~1.4M/ч (повышенный риск). Зебра {zTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({zTurbo.targetSteps} ш.), Переход {tTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({tTurbo.targetSteps} ш.), Опасность {dTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({dTurbo.targetSteps} ш.).
                         </div>
                       </button>
 
@@ -1373,7 +1301,7 @@ export default function MatreshkaQuantum() {
 
               <div className="bg-black/60 rounded-2xl p-4 mb-6 border border-gray-800 font-mono">
                 <div className="text-[10px] text-gray-500 uppercase tracking-widest mb-1 font-bold">ПРОФИТ СЕССИИ</div>
-                <div className="text-3xl text-emerald-400 font-black">+{Math.round(profit).toLocaleString('ru-RU')} ₽</div>
+                <div className="text-3xl text-emerald-400 font-black">+{Math.floor(profit).toLocaleString('ru-RU')} ₽</div>
               </div>
 
               <div className="space-y-2">

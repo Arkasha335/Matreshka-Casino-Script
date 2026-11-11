@@ -12,6 +12,15 @@ export class BankrollManager {
   private static readonly ZEBRA_LOCK_CAPITAL_THRESHOLD = 3000000;
 
   /**
+   * Exact casino payout rounding: Matreshka server floors net profit down (equivalently rounds 2% fee up).
+   * Using integer multiplication before division avoids IEEE-754 float drift on integer bets.
+   */
+  public static calcNetWin(bet: number): number {
+    const intBet = Math.max(0, Math.floor(bet));
+    return Math.floor((intBet * 98) / 100);
+  }
+
+  /**
    * Determines whether the current sequence should lock into ZEBRA harvesting mode
    * to prevent premature EV degradation during temporary variance inside a deep wallet.
    */
@@ -28,7 +37,7 @@ export class BankrollManager {
   }
 
   /**
-   * Aggressive/Balanced v12.5 profiles exit DANGER immediately via fast detection
+   * Aggressive/Balanced v12.5.1 profiles exit DANGER immediately via fast detection
    * (skipping the 3+5 spin post-DANGER cooldown penalty); SHIELD preserves conservative hysteresis.
    */
   public static usesFastModeDetector(profile: StrategyProfile): boolean {
@@ -40,18 +49,18 @@ export class BankrollManager {
   }
 
   /**
-   * Calibrated v12.5 Base Bet & Target Step Matrix:
-   * Dynamically scales nominal base bets against min(tableLimit, cycleCapital / 1.92),
-   * while guaranteeing every step N stays mathematically affordable at MIN_SOLVER_X (2.025x).
+   * Calibrated v12.5.1 Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
+   * - SHIELD: N=10/10/10 (1.7k/1.2k/1.0k) - maximum survivability (~100% real win >= 2M)
+   * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - high EV (~612k..717k/hr med, up to +1.88M P90) with 10-step storm shield
+   * - TURBO: <3M -> N=8/8/8 (6.5k/4.5k/2.5k); >=3M -> N=7/8/8 (9.0k/5.5k/3.0k) - peak aggressive yield (~1.35M..1.42M/hr)
    */
   public static getCalibratedLadderConfig(
     profile: StrategyProfile,
     mode: ServerMode,
-    cycleCapital: number,
-    tableLimit: number = GAME_RULES.MAX_BET
+    cycleCapital: number
   ): { baseBet: number; targetSteps: number } {
     const cap = Math.max(GAME_RULES.MIN_BET * 10, cycleCapital);
-    const limit = Math.max(GAME_RULES.MIN_BET * 10, tableLimit);
+    const limit = GAME_RULES.MAX_BET;
 
     const effectiveCeiling = Math.min(limit, cap / this.CYCLE_COST_FACTOR);
     const scale = Math.max(0.15, effectiveCeiling / 1000000);
@@ -63,26 +72,31 @@ export class BankrollManager {
       targetSteps = 10;
       nominalB0 = mode === 'ZEBRA' ? 1700 : mode === 'TRANSITION' ? 1200 : 1000;
     } else if (profile === 'TURBO_HARVEST') {
-      if (mode === 'ZEBRA') {
-        nominalB0 = 6000;
-        targetSteps = 8;
-      } else if (mode === 'TRANSITION') {
-        nominalB0 = 4000;
-        targetSteps = 8;
+      if (cap >= 3000000) {
+        if (mode === 'ZEBRA') {
+          nominalB0 = 9000;
+          targetSteps = 7;
+        } else if (mode === 'TRANSITION') {
+          nominalB0 = 5500;
+          targetSteps = 8;
+        } else {
+          nominalB0 = 3000;
+          targetSteps = 8;
+        }
       } else {
-        nominalB0 = 1700;
-        targetSteps = 9;
+        targetSteps = 8;
+        nominalB0 = mode === 'ZEBRA' ? 6500 : mode === 'TRANSITION' ? 4500 : 2500;
       }
     } else {
-      // APEX_IDEAL (v12.5 Sweet Spot: 9/10/10 horizon, +783k..+976k/hr @ 2M limit, 100% Real Win @ 6.5M)
+      // APEX_IDEAL (v12.5.1 Strict 1M Matrix: N=8/10/10, 5.0k/2.5k/1.4k)
       if (mode === 'ZEBRA') {
-        nominalB0 = 3500;
-        targetSteps = 9;
+        nominalB0 = 5000;
+        targetSteps = 8;
       } else if (mode === 'TRANSITION') {
-        nominalB0 = 2000;
+        nominalB0 = 2500;
         targetSteps = 10;
       } else {
-        nominalB0 = 1200;
+        nominalB0 = 1400;
         targetSteps = 10;
       }
     }
@@ -116,19 +130,18 @@ export class BankrollManager {
   /**
    * Exact Geometric Budget Solver (via 25-step binary search):
    * Finds the highest growth factor X such that:
-   * 1) Future geometric bets B_j = prevB * X^j (j = 1..remSteps) stay <= tableLimit
+   * 1) Future geometric bets B_j = prevB * X^j (j = 1..remSteps) stay <= tableLimit (1,000,000 RUB)
    * 2) Cumulative remaining spend sum_{j=1..remSteps} B_j <= remWallet
-   * Guarantees smooth scaling directly up to min(tableLimit, affordableMax).
    */
   public static solveExactBudgetX(
     prevB: number,
     remSteps: number,
     remWallet: number,
-    tableLimit: number
+    tableLimit: number = GAME_RULES.MAX_BET
   ): SolverSolution {
     const safePrev = Math.max(1, prevB);
     const steps = Math.max(1, remSteps);
-    const limit = Math.max(GAME_RULES.MIN_BET, tableLimit);
+    const limit = Math.min(GAME_RULES.MAX_BET, Math.max(GAME_RULES.MIN_BET, tableLimit));
     const wallet = Math.max(0, remWallet);
 
     const xTable = Math.pow(limit / safePrev, 1.0 / steps);
@@ -148,7 +161,7 @@ export class BankrollManager {
       if (geomSum(this.MIN_SOLVER_X) <= wallet) {
         return {
           growthFactor: this.MIN_SOLVER_X,
-          projectedTerminalBet: Math.min(limit, wallet),
+          projectedTerminalBet: Math.min(limit, Math.floor(wallet)),
         };
       }
       let lo = 1.01;
@@ -156,7 +169,7 @@ export class BankrollManager {
       if (geomSum(lo) > wallet) {
         return {
           growthFactor: lo,
-          projectedTerminalBet: Math.min(limit, wallet),
+          projectedTerminalBet: Math.min(limit, Math.floor(wallet)),
         };
       }
       for (let i = 0; i < 25; i++) {
@@ -182,7 +195,7 @@ export class BankrollManager {
       if (geomSum(lo) > wallet) {
         return {
           growthFactor: lo,
-          projectedTerminalBet: Math.min(limit, wallet),
+          projectedTerminalBet: Math.min(limit, Math.floor(wallet)),
         };
       }
       let hiW = this.MIN_SOLVER_X;
@@ -211,20 +224,18 @@ export class BankrollManager {
   }
 
   /**
-   * Builds live EngineParams using cycleCapital (bankroll + cdt) so step projections
-   * and multipliers remain stable and accurate throughout recovery cycles.
+   * Builds live EngineParams using cycleCapital (bankroll + cdt) strictly under 1,000,000 RUB table ceiling.
    */
   public static getEngineParams(
     profile: StrategyProfile,
     mode: ServerMode,
     bankroll: number,
-    tableLimit: number = GAME_RULES.MAX_BET,
     cdt: number = 0,
     lockedTargetSteps?: number
   ): EngineParams {
-    const limit = Math.max(GAME_RULES.MIN_BET * 10, tableLimit);
-    const cycleCapital = Math.max(GAME_RULES.MIN_BET * 10, bankroll + Math.max(0, cdt));
-    const cfg = this.getCalibratedLadderConfig(profile, mode, cycleCapital, limit);
+    const limit = GAME_RULES.MAX_BET;
+    const cycleCapital = Math.max(GAME_RULES.MIN_BET * 10, Math.floor(bankroll) + Math.max(0, cdt));
+    const cfg = this.getCalibratedLadderConfig(profile, mode, cycleCapital);
 
     const targetSteps =
       lockedTargetSteps !== undefined && lockedTargetSteps > 0
@@ -244,7 +255,6 @@ export class BankrollManager {
       limit
     );
 
-    // Simulate forward ladder durability against cycleCapital and tableLimit
     let durabilitySteps = 0;
     let simCdt = 0;
     let simWallet = cycleCapital;
@@ -266,8 +276,7 @@ export class BankrollManager {
           tableLimit: limit,
         },
         simWallet,
-        simPrev,
-        limit
+        simPrev
       );
       if (nextB < GAME_RULES.MIN_BET || nextB > simWallet) break;
       durabilitySteps++;
@@ -291,8 +300,8 @@ export class BankrollManager {
   }
 
   /**
-   * Computes exact next wager using the Exact Geometric Budget Solver + 2% Commission Coverage
-   * + Generalized Penultimate Horizon Guard (valid for 1M, 2M, or custom table limits).
+   * Computes exact next wager using the Exact Geometric Budget Solver + Exact Floor Commission Recovery
+   * + Penultimate Horizon Guard strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB).
    */
   public static calculateBet(
     cdt: number,
@@ -300,54 +309,60 @@ export class BankrollManager {
     _mode: ServerMode,
     params: EngineParams,
     bankroll: number,
-    prevBet?: number,
-    tableLimit?: number
+    prevBet?: number
   ): number {
-    if (bankroll <= 0) return 0;
-    if (bankroll < GAME_RULES.MIN_BET) return Math.round(bankroll);
+    const intWallet = Math.floor(bankroll);
+    if (intWallet <= 0) return 0;
+    if (intWallet < GAME_RULES.MIN_BET) return intWallet;
 
-    const limit = Math.max(GAME_RULES.MIN_BET, tableLimit ?? params.tableLimit ?? GAME_RULES.MAX_BET);
-    const baseBet = Math.max(GAME_RULES.MIN_BET, Math.min(params.baseBet, bankroll, limit));
+    const limit = GAME_RULES.MAX_BET;
+    const baseBet = Math.max(GAME_RULES.MIN_BET, Math.min(Math.floor(params.baseBet), intWallet, limit));
 
     if (cdt <= 0 || step <= 1) {
-      return Math.round(baseBet);
+      return baseBet;
     }
 
     const targetSteps = Math.max(1, params.stepsToLimit || 10);
     const rem = Math.max(1, targetSteps - step + 1);
-    const minTbb = Math.ceil((cdt + baseBet) / GAME_RULES.WIN_NET_RATIO);
+
+    // Ensure server's floored net payout strictly covers cumulative debt + baseBet
+    let minTbb = Math.ceil(((cdt + baseBet) * 100) / 98);
+    while (this.calcNetWin(minTbb) < cdt + baseBet) {
+      minTbb++;
+    }
 
     const pb =
       prevBet !== undefined && prevBet > 0
-        ? prevBet
+        ? Math.floor(prevBet)
         : Math.max(baseBet, Math.round(baseBet * Math.pow(params.growthFactor, Math.max(0, step - 2))));
 
     if (rem === 1) {
-      const cap = Math.min(limit, bankroll);
-      // Avoid wagering 1M-2M over tiny leftover debt (<30% of cap) after an earlier partial win
+      const cap = Math.min(limit, intWallet);
       const finalTerminal = cdt < cap * 0.30 ? Math.min(minTbb, cap) : cap;
-      return Math.max(GAME_RULES.MIN_BET, Math.min(cap, Math.round(finalTerminal)));
+      return Math.max(GAME_RULES.MIN_BET, Math.min(cap, Math.floor(finalTerminal)));
     }
 
-    const { growthFactor } = this.solveExactBudgetX(pb, rem, bankroll, limit);
+    const { growthFactor } = this.solveExactBudgetX(pb, rem, intWallet, limit);
     const geomBet = Math.round(pb * growthFactor);
     let bet = Math.max(minTbb, geomBet);
 
-    // Generalized Penultimate Horizon Guard (rem === 2):
-    // Ensures CDT + bet stays below 0.98 * min(limit, bankroll - bet) so the final step
-    // strictly recovers all cumulative debt with positive net profit under 2% tax.
+    // Penultimate Horizon Guard (rem === 2):
+    // Ensures CDT + bet stays within floored final-step recovery capacity of 1,000,000 RUB or wallet.
     if (rem === 2) {
-      const maxPenTable = Math.floor(limit * GAME_RULES.WIN_NET_RATIO) - cdt - 100;
-      const maxPenWallet = Math.floor(
-        (GAME_RULES.WIN_NET_RATIO * bankroll - cdt - 100) / (1 + GAME_RULES.WIN_NET_RATIO)
-      );
+      const maxPenTable = this.calcNetWin(limit) - cdt - 100;
+      const maxPenWallet = Math.floor((0.98 * intWallet - cdt - 100) / 1.98);
       const maxSafe = Math.min(maxPenTable, maxPenWallet);
-      const minBreakeven = Math.ceil((cdt + 100) / GAME_RULES.WIN_NET_RATIO);
+
+      let minBreakeven = Math.ceil(((cdt + 100) * 100) / 98);
+      while (this.calcNetWin(minBreakeven) < cdt + 100) {
+        minBreakeven++;
+      }
+
       if (maxSafe >= minBreakeven) {
         bet = Math.min(bet, maxSafe);
       }
     }
 
-    return Math.round(Math.max(GAME_RULES.MIN_BET, Math.min(bet, limit, bankroll)));
+    return Math.max(GAME_RULES.MIN_BET, Math.min(Math.floor(bet), limit, intWallet));
   }
 }

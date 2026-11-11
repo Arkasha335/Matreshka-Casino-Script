@@ -11,9 +11,8 @@ export const GAME_RULES = {
   ZERO_SLOTS: 2,
   MIN_BET: 1000,
   MAX_BET: 1000000,
-  VIP_MAX_BET: 2000000,
-  TAX_RATE: 0.02, // 2% commission on net win
-  WIN_NET_RATIO: 0.98, // Net profit multiplier (bet * 0.98)
+  TAX_RATE: 0.02, // 2% commission on net win (server floors net profit)
+  WIN_NET_RATIO: 0.98, // Net profit multiplier (floor(bet * 98 / 100))
   EXPECTED_ZERO_INTERVAL: 25, // 50 / 2 = 25 spins
 } as const;
 

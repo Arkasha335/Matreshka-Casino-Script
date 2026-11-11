@@ -49,7 +49,7 @@ export class RiskGuard {
 
     for (let i = 0; i < history.length; i++) {
       const h = history[i];
-      currentBankroll += Math.round(h.netProfit);
+      currentBankroll += h.netProfit >= 0 ? Math.floor(h.netProfit) : Math.trunc(h.netProfit);
       if (currentBankroll > peak) peak = currentBankroll;
       const dd = peak - currentBankroll;
       if (dd > maxDrawdown) maxDrawdown = dd;
@@ -100,8 +100,8 @@ export class RiskGuard {
     }
 
     const totalSpins = history.length;
-    const totalProfit = Math.round(currentBankroll - initialBankroll);
-    const roi = initialBankroll > 0 ? Number(((totalProfit / initialBankroll) * 100).toFixed(2)) : 0;
+    const totalProfit = Math.trunc(currentBankroll - initialBankroll);
+    const roi = initialBankroll > 0 ? Math.trunc((totalProfit / initialBankroll) * 10000) / 100 : 0;
     const redPct = totalSpins > 0 ? Math.round((redCount / totalSpins) * 100) : 0;
     const blackPct = totalSpins > 0 ? Math.round((blackCount / totalSpins) * 100) : 0;
     const zeroPct = totalSpins > 0 ? Math.round((zeroCount / totalSpins) * 100) : 0;
@@ -113,7 +113,7 @@ export class RiskGuard {
       : 'Ожид. ~25 (2/50)';
 
     const durationMs = Math.max(1000, now - sessionStartTime);
-    const profitPerHour = durationMs > 0 ? Math.round(totalProfit / (durationMs / 3600000)) : 0;
+    const profitPerHour = durationMs > 0 ? Math.trunc(totalProfit / (durationMs / 3600000)) : 0;
 
     let currentStreakColor: string | null = null;
     let currentStreakLength = 0;
