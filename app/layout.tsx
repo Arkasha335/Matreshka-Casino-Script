@@ -21,8 +21,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Matreshka Quantum v14.0 — Obsidian Terminal',
-  description: 'Квантовый тактический терминал управления банкроллом Matreshka Quantum v14.0',
+  title: 'Matreshka Quantum v15.0 FINAL APEX — Obsidian Terminal',
+  description: 'Квантовый тактический терминал управления банкроллом Matreshka Quantum v15.0 FINAL APEX',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

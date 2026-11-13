@@ -51,9 +51,9 @@ export class PrngDetector {
 
   /**
    * Calculate Apex Matrix for Alpha/Omega, streak maximums, average streak lengths, and active streaks.
-   * Synchronized with 15-spin rolling local window (v14.0 Saturation-Aware Engine).
+   * Synchronized with 24-spin rolling local window (v15.0 FINAL APEX Half-Wheel Calibration).
    */
-  public static getApexMatrix(history: HistoryEntry[], window: number = 15): ApexMatrix {
+  public static getApexMatrix(history: HistoryEntry[], window: number = 24): ApexMatrix {
     const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
 
     let redCount = 0;
@@ -151,17 +151,17 @@ export class PrngDetector {
   }
 
   /**
-   * Local color skew over rolling window.
+   * Local color skew over rolling window (24 spins).
    */
-  public static getLocalSkew(history: HistoryEntry[], window: number = 15): SkewStats {
+  public static getLocalSkew(history: HistoryEntry[], window: number = 24): SkewStats {
     const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
     if (nonZero.length === 0) return { red: 50, black: 50, dominant: null };
     const redCount = nonZero.filter(h => h.outcome === 'RED').length;
     const redPct = (redCount / nonZero.length) * 100;
     const blackPct = 100 - redPct;
     let dominant: Outcome | null = null;
-    if (redCount >= 10) dominant = 'RED';
-    else if (nonZero.length - redCount >= 10) dominant = 'BLACK';
+    if (redCount >= Math.ceil(nonZero.length * 0.58)) dominant = 'RED';
+    else if (nonZero.length - redCount >= Math.ceil(nonZero.length * 0.58)) dominant = 'BLACK';
     return { red: redPct, black: blackPct, dominant };
   }
 
@@ -347,10 +347,10 @@ export class PrngDetector {
         confidence = 75;
         state = 'СЛОМ АЛЬФА-НАСЫЩЕНИЯ';
       } else {
-        // Moderate Alpha, Omega Underdog momentum, or Neutral: follow pair
+        // Moderate Alpha, Omega Underdog momentum, or Neutral: hold pair as defensive Martingale insurance
         recommendation = L1;
-        confidence = 65;
-        state = L1 === matrix.alpha ? 'АЛЬФА-ПАРА' : (L1 === matrix.omega ? 'ОМЕГА-ИМПУЛЬС' : 'ПАРА (ПРОДОЛЖЕНИЕ)');
+        confidence = 55;
+        state = L1 === matrix.alpha ? 'АЛЬФА-ПАРА' : (L1 === matrix.omega ? 'ОМЕГА-ИМПУЛЬС' : 'ПАРА (СТРАХОВКА СЕРИИ)');
       }
     } else {
       // 3. Alternation (cas == 1)

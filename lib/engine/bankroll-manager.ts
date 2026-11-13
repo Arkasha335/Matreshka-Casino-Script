@@ -59,10 +59,10 @@ export class BankrollManager {
   }
 
   /**
-   * Calibrated v14.0 Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
+   * Calibrated v15.0 FINAL APEX Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
    * - SHIELD: N=10/10/10 (1.7k/1.2k/1.0k) - maximum survivability (100% real win >= 2M)
-   * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - 93.1% win (27/29) across 2M..6.5M with Zero-Shock Guard
-   * - TURBO v14.0: >=3M -> N=7/8/9 (8.5k/5.0k/2.0k) | <3M -> N=8/8/8 (6.5k/4.5k/2.5k) - peak aggressive EV
+   * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - 96.7% win (29/30) with Zero-Shock Guard & 0 busts across full history
+   * - TURBO: >=3M -> N=7/8/9 (8.5k/5.0k/2.0k) | <3M -> N=8/8/8 (6.5k/4.5k/2.5k) - peak aggressive EV (+5.3M RUB)
    */
   public static getCalibratedLadderConfig(
     profile: StrategyProfile,

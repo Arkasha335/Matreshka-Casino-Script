@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, useSyncExternalStore } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useSyncExternalStore, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   RotateCcw,
@@ -174,6 +174,25 @@ export default function MatreshkaQuantum() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
 
+  const historyRailRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll outcome rail to the latest spin
+  useEffect(() => {
+    if (historyRailRef.current) {
+      historyRailRef.current.scrollTo({
+        left: historyRailRef.current.scrollWidth,
+        behavior: 'smooth',
+      });
+    }
+  }, [history.length]);
+
+  // Horizontal mouse-wheel scrolling handler
+  const handleHistoryWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    if (historyRailRef.current && e.deltaY !== 0) {
+      historyRailRef.current.scrollLeft += e.deltaY;
+    }
+  }, []);
+
   // Interval timer
   useEffect(() => {
     const interval = setInterval(() => setNow(Date.now()), 1000);
@@ -266,7 +285,7 @@ export default function MatreshkaQuantum() {
     return history.slice(-10).filter(h => h.outcome === 'ZERO').length;
   }, [history]);
 
-  // Engine Params & Prediction (v14.0 Saturation-Aware Alpha Engine + Streak Fading + Zero-Shock Guard)
+  // Engine Params & Prediction (v15.0 FINAL APEX Half-Wheel Calibration + Streak Fading + Zero-Shock Guard)
   const cycleCapital = currentBankroll + cdt;
   const isZeroShock =
     strategyProfile !== 'SHIELD_CONSERVATIVE' &&
@@ -323,13 +342,13 @@ export default function MatreshkaQuantum() {
   const globalSkew = useMemo(() => PrngDetector.getGlobalSkew(history), [history]);
   const localSkew = useMemo(() => PrngDetector.getLocalSkew(history), [history]);
 
-  // Synchronized 15-spin Alpha strength (matches PrngDetector.getApexMatrix window=15 & localSkew)
-  const alphaStrength15 = useMemo(() => {
-    const nz15 = history.filter(h => h.outcome !== 'ZERO').slice(-15);
-    if (nz15.length === 0) return { pct: 50, sample: 0 };
-    const red15 = nz15.filter(h => h.outcome === 'RED').length;
-    const domCount = Math.max(red15, nz15.length - red15);
-    return { pct: Math.round((domCount / nz15.length) * 100), sample: nz15.length };
+  // Synchronized 24-spin Alpha strength (matches PrngDetector.getApexMatrix window=24 & localSkew)
+  const alphaStrength24 = useMemo(() => {
+    const nz24 = history.filter(h => h.outcome !== 'ZERO').slice(-24);
+    if (nz24.length === 0) return { pct: 50, sample: 0 };
+    const red24 = nz24.filter(h => h.outcome === 'RED').length;
+    const domCount = Math.max(red24, nz24.length - red24);
+    return { pct: Math.round((domCount / nz24.length) * 100), sample: nz24.length };
   }, [history]);
 
   const avgSpinPaceSec = useMemo(() => {
@@ -797,7 +816,7 @@ export default function MatreshkaQuantum() {
               </div>
             </div>
             <span className="text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-300 px-2.5 py-1 rounded-full border border-emerald-500/30">
-              v14.0
+              v15.0 FINAL APEX
             </span>
           </div>
 
@@ -930,7 +949,7 @@ export default function MatreshkaQuantum() {
               disabled={!setupVal || Number(setupVal) <= 0}
               className="w-full bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-black font-extrabold py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_8px_30px_rgba(16,185,129,0.28)] text-sm cursor-pointer"
             >
-              Запустить сессию v14.0
+              Запустить сессию v15.0 FINAL APEX
             </button>
 
             {savedSessions.length > 0 && (
@@ -972,7 +991,7 @@ export default function MatreshkaQuantum() {
               <span className="font-[family-name:var(--font-display)] text-[11px] font-bold tracking-widest text-neutral-300 uppercase">
                 MATRESHKA QUANTUM
               </span>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v14.0</span>
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v15.0 FINAL APEX</span>
               <span className="text-[11px] font-mono tabular-nums text-neutral-400 bg-[#0B0B0D] border border-white/[0.08] px-2 py-0.5 rounded-md">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
@@ -1422,11 +1441,11 @@ export default function MatreshkaQuantum() {
                 </div>
               </div>
 
-              {/* Rolling Skew Progress Bar (Window 15, synchronized with Alpha) */}
+              {/* Rolling Skew Progress Bar (Window 24, synchronized with Alpha) */}
               <div className="space-y-1.5">
                 <div className="flex justify-between text-[11px] font-mono">
-                  <span className="text-rose-400 font-bold">Красное (15): {Math.round(localSkew.red)}%</span>
-                  <span className="text-neutral-300 font-bold">Чёрное (15): {Math.round(localSkew.black)}%</span>
+                  <span className="text-rose-400 font-bold">Красное (24): {Math.round(localSkew.red)}%</span>
+                  <span className="text-neutral-300 font-bold">Чёрное (24): {Math.round(localSkew.black)}%</span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-neutral-800 overflow-hidden flex">
                   <div
@@ -1443,18 +1462,18 @@ export default function MatreshkaQuantum() {
               {/* Transparent Diagnostic Grid */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 text-xs font-mono">
                 <div className="bg-[#060607] border border-white/[0.06] rounded-xl p-2.5">
-                  <div className="text-[9px] text-neutral-400 uppercase font-sans font-semibold mb-0.5">Альфа (окно 15)</div>
+                  <div className="text-[9px] text-neutral-400 uppercase font-sans font-semibold mb-0.5">Альфа (окно 24)</div>
                   <div className={`font-bold flex items-center gap-1 ${
                     apexMatrix.alpha === 'RED' ? 'text-rose-400' : apexMatrix.alpha === 'BLACK' ? 'text-neutral-200' : 'text-neutral-400'
                   }`}>
                     <span>
                       {apexMatrix.alpha === 'RED'
-                        ? `Красное · ${alphaStrength15.pct}%`
+                        ? `Красное · ${alphaStrength24.pct}%`
                         : apexMatrix.alpha === 'BLACK'
-                        ? `Чёрное · ${alphaStrength15.pct}%`
-                        : `Нейтрально · ${alphaStrength15.pct}%`}
+                        ? `Чёрное · ${alphaStrength24.pct}%`
+                        : `Нейтрально · ${alphaStrength24.pct}%`}
                     </span>
-                    {alphaStrength15.pct >= 70 && (
+                    {alphaStrength24.pct >= 70 && (
                       <span className="text-[8px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1 py-0.2 rounded">
                         НАСЫЩ
                       </span>
@@ -1485,19 +1504,28 @@ export default function MatreshkaQuantum() {
               </div>
             </div>
 
-            {/* Recent History Rail */}
+            {/* Recent History Rail with Mouse Wheel Horizontal Scrolling & Sticky Right Pin */}
             <div className="bg-[#0B0B0D] border border-white/[0.07] rounded-2xl p-4 space-y-2.5">
               <div className="flex items-center justify-between text-[10px] font-bold text-neutral-400 uppercase tracking-wider">
-                <span>Лента исходов (последние 30)</span>
+                <div className="flex items-center gap-2">
+                  <span>Лента исходов</span>
+                  <span className="text-neutral-400 font-mono text-[9px] bg-white/[0.04] px-1.5 py-0.5 rounded-md border border-white/[0.06]">
+                    всего: {history.length}
+                  </span>
+                </div>
                 <span className="font-mono text-neutral-500">
                   К {detailedStats.redCount} · Ч {detailedStats.blackCount} · З {detailedStats.zeroCount}
                 </span>
               </div>
-              <div className="flex gap-2 overflow-x-auto py-1 scrollbar-hide">
+              <div
+                ref={historyRailRef}
+                onWheel={handleHistoryWheel}
+                className="flex gap-2 overflow-x-auto py-1 scroll-smooth select-none cursor-grab active:cursor-grabbing scrollbar-thin scrollbar-thumb-neutral-800 scrollbar-track-transparent"
+              >
                 {history.length === 0 ? (
                   <span className="text-xs text-neutral-500 font-mono">Ожидание первого спина...</span>
                 ) : (
-                  history.slice(-30).map(h => <HistoryIcon key={h.id} entry={h} />)
+                  history.slice(-150).map(h => <HistoryIcon key={h.id} entry={h} />)
                 )}
               </div>
             </div>
@@ -1520,7 +1548,7 @@ export default function MatreshkaQuantum() {
               className="bg-[#0B0B0D] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl"
             >
               <div className="flex justify-between items-center border-b border-white/[0.07] pb-3">
-                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v14.0</h3>
+                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v15.0 FINAL APEX</h3>
                 <button onClick={() => setShowProfileModal(false)} className="text-neutral-400 hover:text-white cursor-pointer">✕</button>
               </div>
 

@@ -57,7 +57,7 @@ class PrngDetectorMirror:
         return count
 
     @staticmethod
-    def get_apex_matrix(history, window=15):
+    def get_apex_matrix(history, window=24):
         non_zero = [h for h in history if h != 'ZERO'][-window:]
         red_count = non_zero.count('RED')
         black_count = non_zero.count('BLACK')
@@ -246,8 +246,8 @@ class PrngDetectorMirror:
                 state = 'СЛОМ АЛЬФА-НАСЫЩЕНИЯ'
             else:
                 recommendation = L1
-                confidence = 65
-                state = 'АЛЬФА-ПАРА' if L1 == matrix['alpha'] else ('ОМЕГА-ИМПУЛЬС' if L1 == matrix['omega'] else 'ПАРА (ПРОДОЛЖЕНИЕ)')
+                confidence = 55
+                state = 'АЛЬФА-ПАРА' if L1 == matrix['alpha'] else ('ОМЕГА-ИМПУЛЬС' if L1 == matrix['omega'] else 'ПАРА (СТРАХОВКА СЕРИИ)')
         else:
             zebra = cls.get_zebra_momentum(history)
             recommendation = L1 if zebra['followL1'] else ('BLACK' if L1 == 'RED' else 'RED')
