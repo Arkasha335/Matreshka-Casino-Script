@@ -77,6 +77,45 @@ def predict_v13(hist, window=15, min_cmax=3):
         if osb >= 2: rec = alpha
     return rec
 
+def predict_v14(hist, window=15):
+    if not hist: return 'RED'
+    nz = [h for h in hist if h != 'ZERO']
+    if len(nz) < 2: return nz[-1] if nz else 'RED'
+    win_nz = nz[-window:]
+    rc = win_nz.count('RED'); bc = len(win_nz) - rc
+    tot = len(win_nz)
+    r_r = rc / tot; b_r = bc / tot
+    alpha = 'RED' if r_r > 0.55 else ('BLACK' if b_r > 0.55 else 'NEUTRAL')
+    omega = 'BLACK' if alpha == 'RED' else ('RED' if alpha == 'BLACK' else 'NEUTRAL')
+    alpha_dom = max(r_r, b_r)
+    cac = nz[-1]
+    cas = 0
+    for h in reversed(nz):
+        if h == cac: cas += 1
+        else: break
+    if len(nz) >= 4:
+        L1, L2, L3, L4 = nz[-1], nz[-2], nz[-3], nz[-4]
+        if L1 == L3 and L2 == L4 and L1 != L2: return 'BLACK' if L1 == 'RED' else 'RED'
+        if L1 == L2 == L3 and L4 != L1: return 'BLACK' if L1 == 'RED' else 'RED'
+    L1, L2 = nz[-1], nz[-2]
+    if cac and cas >= 3:
+        rec = 'BLACK' if cac == 'RED' else 'RED'
+    elif L1 == L2:
+        if L1 == alpha and alpha_dom >= 0.70:
+            rec = 'BLACK' if L1 == 'RED' else 'RED'
+        else:
+            rec = L1
+    else:
+        zm = PrngDetectorMirror.get_zebra_momentum(hist)
+        rec = L1 if zm['followL1'] else ('BLACK' if L1 == 'RED' else 'RED')
+    if L1 == alpha and L2 == omega:
+        osb = 0
+        for i in range(len(nz) - 2, -1, -1):
+            if nz[i] == omega: osb += 1
+            else: break
+        if osb >= 2: rec = alpha
+    return rec
+
 def cfg_1m(profile, mode, cap):
     cap = max(10_000, cap)
     scale = max(0.15, min(TABLE_LIMIT, cap / 1.92) / 1_000_000.0)
@@ -327,7 +366,7 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 bet = exact_bet_1m(cdt, step, b0, eff_n, bank, prev_bet)
                 if bet < 1000 or bet > TABLE_LIMIT or bet > bank:
                     inv_failures += 1
-                pred = predict_v13(hist, window=15, min_cmax=3)
+                pred = predict_v14(hist, window=15)
                 was_at_start = (cdt == 0 or step == 1)
                 py_trace.append([bet, eff_mode, step, eff_n, b0])
 
@@ -374,6 +413,6 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 if mismatches <= 3:
                     print("MISMATCH:", key, "PY_BANK=", bank, "TS_BANK=", ts_rec["bank"])
 
-print(f"PARITY CHECK v13.0 (W=15 + MIN_CMAX=3 + ZERO_SHOCK + TURBO 7/8/9): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
+print(f"PARITY CHECK v14.0 (W=15 + SAT_AWARE_ALPHA + DEEP_FADE + ZERO_SHOCK): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
 if mismatches > 0 or inv_failures > 0:
     sys.exit(1)

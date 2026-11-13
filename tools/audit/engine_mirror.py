@@ -57,7 +57,7 @@ class PrngDetectorMirror:
         return count
 
     @staticmethod
-    def get_apex_matrix(history, window=20):
+    def get_apex_matrix(history, window=15):
         non_zero = [h for h in history if h != 'ZERO'][-window:]
         red_count = non_zero.count('RED')
         black_count = non_zero.count('BLACK')
@@ -65,25 +65,45 @@ class PrngDetectorMirror:
         max_streak_black = 0
         current_streak = 0
         current_color = None
+        streaks_red = []
+        streaks_black = []
 
         for h in non_zero:
             if h == current_color:
                 current_streak += 1
             else:
+                if current_color == 'RED':
+                    streaks_red.append(current_streak)
+                elif current_color == 'BLACK':
+                    streaks_black.append(current_streak)
                 current_color = h
                 current_streak = 1
             if current_color == 'RED' and current_streak > max_streak_red:
                 max_streak_red = current_streak
             if current_color == 'BLACK' and current_streak > max_streak_black:
                 max_streak_black = current_streak
+        if current_color == 'RED':
+            streaks_red.append(current_streak)
+        elif current_color == 'BLACK':
+            streaks_black.append(current_streak)
+
+        avg_streak_red = sum(streaks_red) / len(streaks_red) if streaks_red else 1.5
+        avg_streak_black = sum(streaks_black) / len(streaks_black) if streaks_black else 1.5
 
         alpha = 'NEUTRAL'
         omega = 'NEUTRAL'
+        alpha_dominance = 0.5
         if non_zero:
-            if red_count / len(non_zero) > 0.55:
+            r_ratio = red_count / len(non_zero)
+            b_ratio = black_count / len(non_zero)
+            if r_ratio > 0.55:
                 alpha, omega = 'RED', 'BLACK'
-            elif black_count / len(non_zero) > 0.55:
+                alpha_dominance = r_ratio
+            elif b_ratio > 0.55:
                 alpha, omega = 'BLACK', 'RED'
+                alpha_dominance = b_ratio
+            else:
+                alpha_dominance = max(r_ratio, b_ratio)
 
         current_active_streak = 0
         current_active_color = None
@@ -98,8 +118,11 @@ class PrngDetectorMirror:
         return {
             'alpha': alpha,
             'omega': omega,
+            'alphaDominance': alpha_dominance,
             'maxStreakRed': max_streak_red,
             'maxStreakBlack': max_streak_black,
+            'avgStreakRed': avg_streak_red,
+            'avgStreakBlack': avg_streak_black,
             'currentActiveColor': current_active_color,
             'currentActiveStreak': current_active_streak,
         }
@@ -211,25 +234,20 @@ class PrngDetectorMirror:
             return recommendation, confidence, state
 
         L1, L2 = non_zero[-1], non_zero[-2]
-        current_max_streak = matrix['maxStreakRed'] if matrix['currentActiveColor'] == 'RED' else matrix['maxStreakBlack']
 
-        if matrix['currentActiveColor'] and matrix['currentActiveStreak'] >= current_max_streak and current_max_streak > 0:
+        if matrix['currentActiveColor'] and matrix['currentActiveStreak'] >= 3:
             recommendation = 'BLACK' if matrix['currentActiveColor'] == 'RED' else 'RED'
-            confidence = 90
+            confidence = min(95, 80 + (matrix['currentActiveStreak'] - 3) * 5)
             state = 'ОТСКОК ОТ ПОТОЛКА'
         elif L1 == L2:
-            if L1 == matrix['alpha'] and current_max_streak > 2:
-                recommendation = L1
+            if L1 == matrix['alpha'] and matrix['alphaDominance'] >= 0.70:
+                recommendation = 'BLACK' if L1 == 'RED' else 'RED'
                 confidence = 75
-                state = 'АЛЬФА-ТРЕНД'
-            elif L1 == matrix['omega']:
-                recommendation = 'BLACK' if L1 == 'RED' else 'RED'
-                confidence = 30
-                state = 'ОМЕГА-ЛОВУШКА'
+                state = 'СЛОМ АЛЬФА-НАСЫЩЕНИЯ'
             else:
-                recommendation = 'BLACK' if L1 == 'RED' else 'RED'
-                confidence = 50
-                state = 'НЕЙТРАЛЬНО'
+                recommendation = L1
+                confidence = 65
+                state = 'АЛЬФА-ПАРА' if L1 == matrix['alpha'] else ('ОМЕГА-ИМПУЛЬС' if L1 == matrix['omega'] else 'ПАРА (ПРОДОЛЖЕНИЕ)')
         else:
             zebra = cls.get_zebra_momentum(history)
             recommendation = L1 if zebra['followL1'] else ('BLACK' if L1 == 'RED' else 'RED')

@@ -266,7 +266,7 @@ export default function MatreshkaQuantum() {
     return history.slice(-10).filter(h => h.outcome === 'ZERO').length;
   }, [history]);
 
-  // Engine Params & Prediction (v13.0 Zero-Shock Guard + Unified W=15 Matrix)
+  // Engine Params & Prediction (v14.0 Saturation-Aware Alpha Engine + Streak Fading + Zero-Shock Guard)
   const cycleCapital = currentBankroll + cdt;
   const isZeroShock =
     strategyProfile !== 'SHIELD_CONSERVATIVE' &&
@@ -797,7 +797,7 @@ export default function MatreshkaQuantum() {
               </div>
             </div>
             <span className="text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-300 px-2.5 py-1 rounded-full border border-emerald-500/30">
-              v13.0
+              v14.0
             </span>
           </div>
 
@@ -930,7 +930,7 @@ export default function MatreshkaQuantum() {
               disabled={!setupVal || Number(setupVal) <= 0}
               className="w-full bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-black font-extrabold py-4 rounded-2xl uppercase tracking-widest disabled:opacity-50 transition-all shadow-[0_8px_30px_rgba(16,185,129,0.28)] text-sm cursor-pointer"
             >
-              Запустить сессию v13.0
+              Запустить сессию v14.0
             </button>
 
             {savedSessions.length > 0 && (
@@ -972,7 +972,7 @@ export default function MatreshkaQuantum() {
               <span className="font-[family-name:var(--font-display)] text-[11px] font-bold tracking-widest text-neutral-300 uppercase">
                 MATRESHKA QUANTUM
               </span>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v13.0</span>
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v14.0</span>
               <span className="text-[11px] font-mono tabular-nums text-neutral-400 bg-[#0B0B0D] border border-white/[0.08] px-2 py-0.5 rounded-md">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
@@ -1444,14 +1444,21 @@ export default function MatreshkaQuantum() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1 text-xs font-mono">
                 <div className="bg-[#060607] border border-white/[0.06] rounded-xl p-2.5">
                   <div className="text-[9px] text-neutral-400 uppercase font-sans font-semibold mb-0.5">Альфа (окно 15)</div>
-                  <div className={`font-bold ${
+                  <div className={`font-bold flex items-center gap-1 ${
                     apexMatrix.alpha === 'RED' ? 'text-rose-400' : apexMatrix.alpha === 'BLACK' ? 'text-neutral-200' : 'text-neutral-400'
                   }`}>
-                    {apexMatrix.alpha === 'RED'
-                      ? `Красное · ${alphaStrength15.pct}%`
-                      : apexMatrix.alpha === 'BLACK'
-                      ? `Чёрное · ${alphaStrength15.pct}%`
-                      : `Нейтрально · ${alphaStrength15.pct}%`}
+                    <span>
+                      {apexMatrix.alpha === 'RED'
+                        ? `Красное · ${alphaStrength15.pct}%`
+                        : apexMatrix.alpha === 'BLACK'
+                        ? `Чёрное · ${alphaStrength15.pct}%`
+                        : `Нейтрально · ${alphaStrength15.pct}%`}
+                    </span>
+                    {alphaStrength15.pct >= 70 && (
+                      <span className="text-[8px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1 py-0.2 rounded">
+                        НАСЫЩ
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -1470,9 +1477,9 @@ export default function MatreshkaQuantum() {
                 </div>
 
                 <div className="bg-[#060607] border border-white/[0.06] rounded-xl p-2.5">
-                  <div className="text-[9px] text-neutral-400 uppercase font-sans font-semibold mb-0.5">Глобально / Пики</div>
+                  <div className="text-[9px] text-neutral-400 uppercase font-sans font-semibold mb-0.5">Серии: Ср. / Макс</div>
                   <div className="font-bold text-neutral-200">
-                    {Math.round(globalSkew.red)}/{Math.round(globalSkew.black)} · {apexMatrix.maxStreakRed}:{apexMatrix.maxStreakBlack}
+                    {apexMatrix.avgStreakRed.toFixed(1)}:{apexMatrix.avgStreakBlack.toFixed(1)} · {apexMatrix.maxStreakRed}:{apexMatrix.maxStreakBlack}
                   </div>
                 </div>
               </div>
@@ -1513,7 +1520,7 @@ export default function MatreshkaQuantum() {
               className="bg-[#0B0B0D] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl"
             >
               <div className="flex justify-between items-center border-b border-white/[0.07] pb-3">
-                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v13.0</h3>
+                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v14.0</h3>
                 <button onClick={() => setShowProfileModal(false)} className="text-neutral-400 hover:text-white cursor-pointer">✕</button>
               </div>
 

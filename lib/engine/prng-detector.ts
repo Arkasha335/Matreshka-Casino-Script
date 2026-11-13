@@ -50,8 +50,8 @@ export class PrngDetector {
   }
 
   /**
-   * Calculate Apex Matrix for Alpha/Omega, streak maximums and active streaks.
-   * Synchronized with 15-spin rolling local window (v13.0).
+   * Calculate Apex Matrix for Alpha/Omega, streak maximums, average streak lengths, and active streaks.
+   * Synchronized with 15-spin rolling local window (v14.0 Saturation-Aware Engine).
    */
   public static getApexMatrix(history: HistoryEntry[], window: number = 15): ApexMatrix {
     const nonZero = history.filter(h => h.outcome !== 'ZERO').slice(-window);
@@ -63,6 +63,8 @@ export class PrngDetector {
 
     let currentStreak = 0;
     let currentColor: Outcome | null = null;
+    const streaksRed: number[] = [];
+    const streaksBlack: number[] = [];
 
     for (const h of nonZero) {
       if (h.outcome === 'RED') redCount++;
@@ -71,6 +73,8 @@ export class PrngDetector {
       if (h.outcome === currentColor) {
         currentStreak++;
       } else {
+        if (currentColor === 'RED') streaksRed.push(currentStreak);
+        else if (currentColor === 'BLACK') streaksBlack.push(currentStreak);
         currentColor = h.outcome;
         currentStreak = 1;
       }
@@ -78,17 +82,29 @@ export class PrngDetector {
       if (currentColor === 'RED' && currentStreak > maxStreakRed) maxStreakRed = currentStreak;
       if (currentColor === 'BLACK' && currentStreak > maxStreakBlack) maxStreakBlack = currentStreak;
     }
+    if (currentColor === 'RED') streaksRed.push(currentStreak);
+    else if (currentColor === 'BLACK') streaksBlack.push(currentStreak);
+
+    const avgStreakRed = streaksRed.length > 0 ? streaksRed.reduce((a, b) => a + b, 0) / streaksRed.length : 1.5;
+    const avgStreakBlack = streaksBlack.length > 0 ? streaksBlack.reduce((a, b) => a + b, 0) / streaksBlack.length : 1.5;
 
     let alpha: Outcome | 'NEUTRAL' = 'NEUTRAL';
     let omega: Outcome | 'NEUTRAL' = 'NEUTRAL';
+    let alphaDominance = 0.5;
 
     if (nonZero.length > 0) {
-      if (redCount / nonZero.length > 0.55) {
+      const redRatio = redCount / nonZero.length;
+      const blackRatio = blackCount / nonZero.length;
+      if (redRatio > 0.55) {
         alpha = 'RED';
         omega = 'BLACK';
-      } else if (blackCount / nonZero.length > 0.55) {
+        alphaDominance = redRatio;
+      } else if (blackRatio > 0.55) {
         alpha = 'BLACK';
         omega = 'RED';
+        alphaDominance = blackRatio;
+      } else {
+        alphaDominance = Math.max(redRatio, blackRatio);
       }
     }
 
@@ -108,8 +124,11 @@ export class PrngDetector {
     return {
       alpha,
       omega,
+      alphaDominance,
       maxStreakRed,
       maxStreakBlack,
+      avgStreakRed,
+      avgStreakBlack,
       currentActiveColor,
       currentActiveStreak,
     };
@@ -314,28 +333,27 @@ export class PrngDetector {
     const L1 = nonZero[nonZero.length - 1].outcome;
     const L2 = nonZero[nonZero.length - 2].outcome;
 
-    const currentMaxStreak = matrix.currentActiveColor === 'RED' ? matrix.maxStreakRed : matrix.maxStreakBlack;
-    const bounceThreshold = Math.max(3, currentMaxStreak);
-
-    if (matrix.currentActiveColor && currentMaxStreak > 0 && matrix.currentActiveStreak >= bounceThreshold) {
+    // 1. Deep streak fading (cas >= 3)
+    // Strictly bet against the streak to termination ("до упора ставить против нее")
+    if (matrix.currentActiveColor && matrix.currentActiveStreak >= 3) {
       recommendation = matrix.currentActiveColor === 'RED' ? 'BLACK' : 'RED';
-      confidence = 90;
+      confidence = Math.min(95, 80 + (matrix.currentActiveStreak - 3) * 5);
       state = 'ОТСКОК ОТ ПОТОЛКА';
     } else if (L1 === L2) {
-      if (L1 === matrix.alpha && currentMaxStreak > 2) {
-        recommendation = L1;
+      // 2. Pairs (cas == 2)
+      // Saturated Alpha (dominance >= 70%): empirical probability of break is 75% -> mean-reversion fade!
+      if (L1 === matrix.alpha && matrix.alphaDominance >= 0.70) {
+        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
         confidence = 75;
-        state = 'АЛЬФА-ТРЕНД';
-      } else if (L1 === matrix.omega) {
-        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
-        confidence = 30;
-        state = 'ОМЕГА-ЛОВУШКА';
+        state = 'СЛОМ АЛЬФА-НАСЫЩЕНИЯ';
       } else {
-        recommendation = L1 === 'RED' ? 'BLACK' : 'RED';
-        confidence = 50;
-        state = 'НЕЙТРАЛЬНО';
+        // Moderate Alpha, Omega Underdog momentum, or Neutral: follow pair
+        recommendation = L1;
+        confidence = 65;
+        state = L1 === matrix.alpha ? 'АЛЬФА-ПАРА' : (L1 === matrix.omega ? 'ОМЕГА-ИМПУЛЬС' : 'ПАРА (ПРОДОЛЖЕНИЕ)');
       }
     } else {
+      // 3. Alternation (cas == 1)
       const zebra = this.getZebraMomentum(history);
       if (zebra.followL1) {
         recommendation = L1;

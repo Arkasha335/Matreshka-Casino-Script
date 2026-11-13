@@ -51,8 +51,11 @@ export interface SessionLogEntry {
 export interface ApexMatrix {
   alpha: Outcome | 'NEUTRAL';
   omega: Outcome | 'NEUTRAL';
+  alphaDominance: number;
   maxStreakRed: number;
   maxStreakBlack: number;
+  avgStreakRed: number;
+  avgStreakBlack: number;
   currentActiveColor: Outcome | null;
   currentActiveStreak: number;
 }
