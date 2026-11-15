@@ -59,6 +59,29 @@ export class BankrollManager {
   }
 
   /**
+   * Terminal Sequence Loss Check:
+   * Returns true if a lost bet marks the end of the recovery ladder:
+   * 1) Table ceiling reached: effectiveBet >= GAME_RULES.MAX_BET (1,000,000 RUB).
+   * 2) Target step budget exhausted: sequenceTargetSteps is defined and currentStep >= sequenceTargetSteps.
+   * When true, the sequence is written off as a realized loss:
+   * CDT is wiped to 0 and progression restarts cleanly from Step 1 (base bet).
+   */
+  public static isTerminalSequenceLoss(
+    currentStep: number,
+    sequenceTargetSteps?: number,
+    effectiveBet?: number,
+    tableLimit: number = GAME_RULES.MAX_BET
+  ): boolean {
+    if (effectiveBet !== undefined && effectiveBet >= tableLimit) {
+      return true;
+    }
+    if (sequenceTargetSteps !== undefined && sequenceTargetSteps > 0 && currentStep >= sequenceTargetSteps) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Calibrated v15.0 FINAL APEX Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
    * - SHIELD: N=10/10/10 (1.7k/1.2k/1.0k) - maximum survivability (100% real win >= 2M)
    * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - 96.7% win (29/30) with Zero-Shock Guard & 0 busts across full history
@@ -338,6 +361,11 @@ export class BankrollManager {
     }
 
     const targetSteps = Math.max(1, params.stepsToLimit || 10);
+    if (step > targetSteps) {
+      // Safety guard: step exceeded allocated sequence horizon.
+      // Reset to baseBet to prevent runaway flat-ceiling bets.
+      return baseBet;
+    }
     const rem = Math.max(1, targetSteps - step + 1);
 
     // Ensure server's floored net payout strictly covers cumulative debt + baseBet

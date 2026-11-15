@@ -328,6 +328,14 @@ class BankrollManagerMirror:
         }
 
     @staticmethod
+    def is_terminal_sequence_loss(current_step, sequence_target_steps=None, effective_bet=None, table_limit=GAME_RULES['MAX_BET']):
+        if effective_bet is not None and effective_bet >= table_limit:
+            return True
+        if sequence_target_steps is not None and sequence_target_steps > 0 and current_step >= sequence_target_steps:
+            return True
+        return False
+
+    @staticmethod
     def calculate_bet(cdt, step, mode, params, bankroll, prev_bet=None):
         base_bet = max(GAME_RULES['MIN_BET'], params['baseBet'])
         if cdt <= 0 or step <= 1:

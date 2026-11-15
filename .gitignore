@@ -9,3 +9,9 @@ lib/licenses.json
 *.tsbuildinfo
 __pycache__/
 *.pyc
+bot/*.png
+!bot/templates/*.png
+bot/logs/*.csv
+bot/logs/*.jsonl
+!bot/logs/session_20261115_170632.jsonl
+!bot/logs/session_20261115_184755.jsonl

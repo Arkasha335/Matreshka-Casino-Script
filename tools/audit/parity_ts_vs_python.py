@@ -1,6 +1,6 @@
 import glob, hashlib, json, math, os, subprocess, sys
 sys.path.append(os.path.dirname(__file__))
-from engine_mirror import PrngDetectorMirror, js_round
+from engine_mirror import PrngDetectorMirror, BankrollManagerMirror, js_round
 
 TABLE_LIMIT = 1_000_000
 
@@ -296,6 +296,13 @@ for (const profile of profiles) {
           cdt += bet;
           step += 1;
         }
+
+        const isTerminal = !isWin && BankrollManager.isTerminalSequenceLoss(step - 1, seqTargetSteps, bet, GAME_RULES.MAX_BET);
+        if (isTerminal) {
+          cdt = 0;
+          step = 1;
+          nextZeroInSeq = 0;
+        }
         zeroInSeq = nextZeroInSeq;
         bank += netProfit;
         hist.push({ outcome, betAmount: bet, betColor: pred, isWin, netProfit });
@@ -376,6 +383,7 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 was_at_start = (cdt == 0 or step == 1)
                 py_trace.append([bet, eff_mode, step, eff_n, b0])
 
+                is_win = (outcome == pred and outcome != "ZERO")
                 if outcome == "ZERO":
                     net = -bet; cdt += bet; step += 1; zero_in_seq += 1
                 elif outcome == pred:
@@ -384,6 +392,12 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                     if cdt == 0: step = 1; zero_in_seq = 0
                 else:
                     net = -bet; cdt += bet; step += 1
+
+                is_terminal = not is_win and BankrollManagerMirror.is_terminal_sequence_loss(step - 1, eff_n, bet, TABLE_LIMIT)
+                if is_terminal:
+                    cdt = 0
+                    step = 1
+                    zero_in_seq = 0
                 bank += net
                 hist.append(outcome)
 

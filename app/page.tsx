@@ -403,6 +403,25 @@ export default function MatreshkaQuantum() {
       nextStep = currentStep + 1;
     }
 
+    // Terminal Sequence Loss Guard (100% Guaranteed Series Reset):
+    // If the lost bet reached the table limit (1,000,000 RUB) or exhausted the target steps of the ladder,
+    // the sequence is formally dead. Write off CDT to 0 and restart cleanly from Step 1.
+    const isTerminalLoss =
+      !isWin &&
+      BankrollManager.isTerminalSequenceLoss(
+        currentStep,
+        sequenceTargetSteps,
+        effectiveBet,
+        GAME_RULES.MAX_BET
+      );
+
+    if (isTerminalLoss) {
+      nextCdt = 0;
+      nextStep = 1;
+      nextAttackStep = 0;
+      nextZeroInSeq = 0;
+    }
+
     const newEntry: HistoryEntry = {
       id: `${history.length}-${outcome}-${Date.now()}`,
       outcome,

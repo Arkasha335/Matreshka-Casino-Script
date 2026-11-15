@@ -1,0 +1,20 @@
+{
+  "mode": "auto",
+  "description": "Режим 'auto': координаты динамически вычисляются по положению диалога 'Красное и черное'. Режим 'manual': координаты берутся строго из custom_points.",
+  "custom_points": {
+    "tab_exact_color": [626, 459],
+    "red_cell": [593, 351],
+    "black_cell": [839, 299],
+    "bet_input": [568, 539],
+    "play_btn": [713, 539],
+    "close_x": [898, 169]
+  },
+  "offsets_relative_to_anchor": {
+    "tab_exact_color": [273, 315],
+    "red_cell": [240, 207],
+    "black_cell": [486, 155],
+    "bet_input": [215, 395],
+    "play_btn": [360, 395],
+    "close_x": [545, 25]
+  }
+}
