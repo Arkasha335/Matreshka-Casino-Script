@@ -101,6 +101,43 @@ class VisionEngine:
 
         return None
 
+    def verify_dialog_anchor_fast(self, scene: np.ndarray, anchor: Optional[Tuple[int, int, float]], threshold: float = 0.80) -> bool:
+        """
+        Ultra-fast (<0.3ms) Region-of-Interest (ROI) verification of the casino dialog title.
+        Avoids expensive 185ms+ multi-scale full-screen template searches when the dialog hasn't moved.
+        Returns True if the title exists at the expected coordinates with high confidence.
+        """
+        if anchor is None:
+            return False
+
+        tpl = self.templates.get("title_casino.png")
+        if tpl is None:
+            return True
+
+        xt, yt, s = anchor
+        h, w = scene.shape[:2]
+
+        tpl_w = int(tpl.shape[1] * s)
+        tpl_h = int(tpl.shape[0] * s)
+
+        y1 = max(0, int(yt - 15 * s))
+        y2 = min(h, int(yt + (tpl.shape[0] + 15) * s))
+        x1 = max(0, int(xt - 15 * s))
+        x2 = min(w, int(xt + (tpl.shape[1] + 15) * s))
+
+        if y2 - y1 < tpl_h or x2 - x1 < tpl_w:
+            return False
+
+        roi = scene[y1:y2, x1:x2]
+        roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        tpl_gray = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+        if s != 1.0:
+            tpl_gray = cv2.resize(tpl_gray, (tpl_w, tpl_h))
+
+        res = cv2.matchTemplate(roi_gray, tpl_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(res)
+        return max_val >= threshold
+
     def load_coordinates_config(self) -> Dict[str, Any]:
         """Loads coordinates.json override if available."""
         cfg_path = os.path.join(os.path.dirname(__file__), "coordinates.json")

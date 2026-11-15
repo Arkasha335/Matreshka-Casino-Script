@@ -159,6 +159,37 @@ class CasinoBot:
             return True
         return False
 
+    def _execute_bet_and_play(self, pts: Dict[str, Tuple[int, int]], rec_color: Outcome, bet_amount: int):
+        """
+        Executes color selection, bet amount input (if changed), and 'Играть' click.
+        Uses batched atomic ADB command chain in fast_mode (<200ms).
+        """
+        target_cell = pts["red_cell"] if rec_color == 'RED' else pts["black_cell"]
+        play_pt = pts["play_btn"]
+        bet_changed = (self.current_bet_in_field != bet_amount)
+
+        if self.config.fast_mode:
+            self.adb.batched_bet(
+                color_x=target_cell[0],
+                color_y=target_cell[1],
+                play_x=play_pt[0],
+                play_y=play_pt[1],
+                bet_amount=bet_amount if bet_changed else None,
+                bet_input_pt=pts["bet_input"] if bet_changed else None,
+                changed=bet_changed,
+                jitter=1
+            )
+            self.current_bet_in_field = bet_amount
+        else:
+            self.adb.tap(target_cell[0], target_cell[1], jitter=1)
+            time.sleep(0.05)
+            if bet_changed:
+                bet_pt = pts["bet_input"]
+                self.adb.clear_and_type(bet_pt[0], bet_pt[1], str(bet_amount), backspaces=8, post_delay=0.05, press_enter=True)
+                self.current_bet_in_field = bet_amount
+                time.sleep(0.06)
+            self.adb.tap(play_pt[0], play_pt[1], jitter=1)
+
     def run(self):
         """Main execution loop with robust pause, crash isolation, and live telemetry."""
         self.is_running = True
@@ -210,77 +241,39 @@ class CasinoBot:
                 self.adb.tap(tab_pt[0], tab_pt[1], jitter=2)
                 time.sleep(0.3)
 
-            # Phase 2: Main Betting Cycle
-            while self.is_running:
-                # Handle user pause
-                while self.is_paused and self.is_running:
-                    self.last_event = "Сессия на паузе (PAUSED)"
-                    self._emit_status("PAUSED", {"msg": self.last_event})
-                    time.sleep(0.5)
-                if not self.is_running:
-                    break
+            # ------------------------------------------------------------------
+            # Phase 2: Ultra-Fast Pipelined Betting Cycle
+            # Zero redundant screencaps, zero redundant template searches,
+            # immediate next-bet placement upon outcome detection (<250ms).
+            # ------------------------------------------------------------------
+            pts = self.vision.get_ui_click_points(anchor)
 
-                # 1. Capture current frame & check dialog
-                scene = self.adb.screencap()
-                if scene is None:
-                    time.sleep(1.0)
-                    continue
+            # Spin #1: Initial Bet Computation
+            calc = self.engine.calculate_bet(
+                strategy_profile=self.config.strategy_profile,
+                bankroll=self.bankroll,
+                cdt=self.cdt,
+                step=self.current_step,
+                current_mode=self.current_mode,
+                sequence_start_mode=self.sequence_start_mode,
+                sequence_target_steps=self.sequence_target_steps,
+                zero_in_sequence=self.zero_in_sequence,
+                history=self.engine_history
+            )
+            self.last_prediction = calc
+            next_bet = self.config.flat_bet_amount if self.config.flat_bet_mode else calc['bet']
+            rec_color = calc['recommendation']
+            eff_mode = calc['effectiveMode']
 
-                # Dismiss PayDay if present
-                if self.handle_payday_if_present(scene):
-                    continue
+            if self.bankroll < next_bet:
+                self.stop_reason = f"Недостаточно средств для ставки {next_bet:,.0f} ₽ (баланс: {self.bankroll:,.0f} ₽)"
+                self.last_event = f"[БАЛАНС] Не хватает на ставку {next_bet:,.0f} ₽. Игра остановлена."
+                self._log(f"\n[ALERT] {self.last_event}")
+                self._emit_status("INSUFFICIENT_FUNDS", {"msg": self.last_event, "stop_reason": self.stop_reason})
+                self.is_running = False
 
-                anchor = self.vision.detect_casino_dialog(scene)
-                if not anchor:
-                    # Brief retry to avoid transient animation glitches
-                    time.sleep(0.5)
-                    scene2 = self.adb.screencap()
-                    if scene2 is not None:
-                        anchor = self.vision.detect_casino_dialog(scene2)
-                    if not anchor:
-                        self.stop_reason = "Стол закрыт / вылет из игры"
-                        self.last_event = "Диалог рулетки закрыт! Сессия остановлена."
-                        self._log(f"[ALERT] {self.last_event}")
-                        self._emit_status("STOPPED", {"msg": self.last_event, "stop_reason": self.stop_reason})
-                        self.is_running = False
-                        break
-
-                pts = self.vision.get_ui_click_points(anchor)
-
-                # 2. Compute Recommendation and Staking via Official v15.0 FINAL APEX Engine
-                calc = self.engine.calculate_bet(
-                    strategy_profile=self.config.strategy_profile,
-                    bankroll=self.bankroll,
-                    cdt=self.cdt,
-                    step=self.current_step,
-                    current_mode=self.current_mode,
-                    sequence_start_mode=self.sequence_start_mode,
-                    sequence_target_steps=self.sequence_target_steps,
-                    zero_in_sequence=self.zero_in_sequence,
-                    history=self.engine_history
-                )
-                self.last_prediction = calc
-
-                # Calculated bet
-                if self.config.flat_bet_mode:
-                    next_bet = self.config.flat_bet_amount
-                else:
-                    next_bet = calc['bet']
-
-                rec_color = calc['recommendation']
-                eff_mode = calc['effectiveMode']
-
-                # Insufficient funds check: stop only if we physically cannot place the next bet
-                if self.bankroll < next_bet:
-                    self.stop_reason = f"Недостаточно средств для ставки {next_bet:,.0f} ₽ (баланс: {self.bankroll:,.0f} ₽)"
-                    self.last_event = f"[БАЛАНС] Не хватает на ставку {next_bet:,.0f} ₽. Игра остановлена."
-                    self._log(f"\n[ALERT] {self.last_event}")
-                    self._emit_status("INSUFFICIENT_FUNDS", {"msg": self.last_event, "stop_reason": self.stop_reason})
-                    self.is_running = False
-                    break
-
+            if self.is_running:
                 self.prev_bet_amount = next_bet
-
                 self.last_event = f"Ставка {next_bet:,.0f} ₽ на {rec_color} (Шаг {self.current_step})"
                 self._log(f"\n--- [СПИН #{self.spin_index + 1}] ---")
                 self._log(f" Режим: {eff_mode} (Сырой: {self.current_mode}) | Шаг: {self.current_step} | CDT: {self.cdt:,.0f} ₽")
@@ -294,37 +287,26 @@ class CasinoBot:
                     "msg": self.last_event
                 })
 
-                # 3. Select target color cell (Red or Black)
-                target_cell = pts["red_cell"] if rec_color == 'RED' else pts["black_cell"]
-                self.adb.tap(target_cell[0], target_cell[1], jitter=1)
-                time.sleep(0.04 if self.config.fast_mode else 0.08)
-
-                # 4. Update bet amount ONLY if changed from current value in input field!
-                if self.current_bet_in_field != next_bet:
-                    bet_pt = pts["bet_input"]
-                    self.adb.clear_and_type(bet_pt[0], bet_pt[1], str(next_bet), backspaces=8, post_delay=0.05 if self.config.fast_mode else 0.08, press_enter=True)
-                    self.current_bet_in_field = next_bet
-                    time.sleep(0.06 if self.config.fast_mode else 0.10)
-
-                # 5. Click "Играть"
-                play_pt = pts["play_btn"]
-                self.adb.tap(play_pt[0], play_pt[1], jitter=1)
+                # Fire initial spin
+                self._execute_bet_and_play(pts, rec_color, next_bet)
                 spin_start_t = time.time()
 
-                # 7. Wait for initial wheel spin start
                 self.last_event = f"Вращение колеса... (Ставка {next_bet:,.0f} ₽ на {rec_color})"
                 self._emit_status("SPINNING", {
                     "bet": next_bet,
                     "color": rec_color,
                     "msg": self.last_event
                 })
+
+            # Continuous Pipelined Spin-Outcome-Bet Loop
+            while self.is_running:
+                # 1. Quiet sleep while wheel physically spins (0% CPU)
                 time.sleep(self.config.spin_sleep_sec)
 
-                # 8. Dynamic scan for outcome (100% lag-resilient)
+                # 2. Dynamic high-speed scanning for outcome
                 outcome_detected = False
-
                 while self.is_running:
-                    # Watchdog check
+                    # Watchdog timeout check (40s safety)
                     if time.time() - spin_start_t > self.config.watchdog_timeout_sec:
                         self.last_event = "Watchdog: раунд завис более 40с. Сброс интерфейса..."
                         self._log(f"[WARN] {self.last_event}")
@@ -333,26 +315,38 @@ class CasinoBot:
 
                     scene_res = self.adb.screencap()
                     if scene_res is None:
-                        time.sleep(0.10)
+                        time.sleep(self.config.poll_interval_sec)
                         continue
 
-                    # Dismiss PayDay if popped during spin
+                    # Dismiss PayDay if popped up
                     self.handle_payday_if_present(scene_res)
 
-                    # Check if dialog is visible
-                    anchor_res = self.vision.detect_casino_dialog(scene_res)
-                    if not anchor_res:
-                        time.sleep(0.10)
-                        continue
+                    # Fast ROI anchor check (<0.3ms); if failed, full template scan
+                    if not self.vision.verify_dialog_anchor_fast(scene_res, anchor):
+                        anchor = self.vision.detect_casino_dialog(scene_res)
+                        if not anchor:
+                            time.sleep(0.3)
+                            scene_retry = self.adb.screencap()
+                            if scene_retry is not None:
+                                anchor = self.vision.detect_casino_dialog(scene_retry)
+                            if not anchor:
+                                self.stop_reason = "Стол закрыт / вылет из игры"
+                                self.last_event = "Диалог рулетки закрыт! Сессия остановлена."
+                                self._log(f"[ALERT] {self.last_event}")
+                                self._emit_status("STOPPED", {"msg": self.last_event, "stop_reason": self.stop_reason})
+                                self.is_running = False
+                                break
+                        pts = self.vision.get_ui_click_points(anchor)
 
-                    # Dynamic outcome scan
                     elapsed = time.time() - spin_start_t
 
-                    # Require minimum physical spin time before accepting result
+                    # Outcome check (only after physical minimum spin duration)
                     if elapsed >= self.config.min_spin_duration_sec:
-                        outcome, is_win, win_num, debug = self.vision.detect_outcome_multisignal(scene_res, anchor_res, rec_color)
+                        outcome, is_win, win_num, debug = self.vision.detect_outcome_multisignal(scene_res, anchor, rec_color)
                         if outcome is not None and is_win is not None:
-                            # Outcome successfully captured!
+                            # ----------------------------------------------------
+                            # OUTCOME DETECTED!
+                            # ----------------------------------------------------
                             self.last_winning_num = win_num if win_num is not None else -1
                             self.spin_index += 1
 
@@ -437,7 +431,7 @@ class CasinoBot:
                             self._emit_status("ROUND_FINISHED", {"msg": self.last_event})
                             outcome_detected = True
 
-                            # Check Max-Bet Drain Guard / Emergency Floor
+                            # Check 1: Max-Bet Drain Guard / Emergency Floor
                             if is_terminal_loss or (not self.is_win and next_bet >= 1_000_000):
                                 self._log(f"[ВНИМАНИЕ] Зафиксирован проигрыш терминальной ставки серии ({next_bet:,.0f} ₽). Текущий баланс: {self.bankroll:,.0f} ₽.")
                                 if self.bankroll < self.config.min_balance_threshold and self.initial_bankroll > self.config.min_balance_threshold:
@@ -448,27 +442,104 @@ class CasinoBot:
                                     self.is_running = False
                                     break
 
-                            time.sleep(self.config.post_spin_cooldown_sec)
+                            # Check 2: Stop-loss
+                            if self.bankroll <= self.initial_bankroll * self.config.stop_loss_pct:
+                                self.stop_reason = f"Сработал Stop-Loss (баланс упал ниже {self.config.stop_loss_pct*100:.0f}%)"
+                                self.last_event = f"[СТОП-ЛОСС] Баланс исчерпан ({self.bankroll:,.0f} ₽). Игра остановлена."
+                                self._log(f"\n[STOP] {self.last_event}")
+                                self._emit_status("STOP_LOSS_REACHED", {"msg": self.last_event, "stop_reason": self.stop_reason})
+                                self.is_running = False
+                                break
+
+                            # Check 3: Take-profit
+                            if self.config.take_profit_target and self.bankroll >= self.config.take_profit_target:
+                                self.stop_reason = f"Достигнута цель по прибыли ({self.config.take_profit_target:,.0f} ₽)"
+                                self.last_event = f"[ЦЕЛЬ ВЗЯТА] Баланс достиг {self.bankroll:,.0f} ₽! Сессия завершена."
+                                self._log(f"\n[TARGET] {self.last_event}")
+                                self._emit_status("TAKE_PROFIT_REACHED", {"msg": self.last_event, "stop_reason": self.stop_reason})
+                                self.is_running = False
+                                break
+
+                            # Check 4: User Pause
+                            while self.is_paused and self.is_running:
+                                self.last_event = "Сессия на паузе (PAUSED)"
+                                self._emit_status("PAUSED", {"msg": self.last_event})
+                                time.sleep(0.5)
+                            if not self.is_running:
+                                break
+
+                            # ----------------------------------------------------
+                            # PIPELINED IMMEDIATE NEXT BET (Zero Latency)
+                            # ----------------------------------------------------
+                            calc = self.engine.calculate_bet(
+                                strategy_profile=self.config.strategy_profile,
+                                bankroll=self.bankroll,
+                                cdt=self.cdt,
+                                step=self.current_step,
+                                current_mode=self.current_mode,
+                                sequence_start_mode=self.sequence_start_mode,
+                                sequence_target_steps=self.sequence_target_steps,
+                                zero_in_sequence=self.zero_in_sequence,
+                                history=self.engine_history
+                            )
+                            self.last_prediction = calc
+                            next_bet = self.config.flat_bet_amount if self.config.flat_bet_mode else calc['bet']
+                            rec_color = calc['recommendation']
+                            eff_mode = calc['effectiveMode']
+
+                            # Check sufficient balance for next bet
+                            if self.bankroll < next_bet:
+                                self.stop_reason = f"Недостаточно средств для ставки {next_bet:,.0f} ₽ (баланс: {self.bankroll:,.0f} ₽)"
+                                self.last_event = f"[БАЛАНС] Не хватает на ставку {next_bet:,.0f} ₽. Игра остановлена."
+                                self._log(f"\n[ALERT] {self.last_event}")
+                                self._emit_status("INSUFFICIENT_FUNDS", {"msg": self.last_event, "stop_reason": self.stop_reason})
+                                self.is_running = False
+                                break
+
+                            self.prev_bet_amount = next_bet
+                            self.last_event = f"Ставка {next_bet:,.0f} ₽ на {rec_color} (Шаг {self.current_step})"
+                            self._log(f"\n--- [СПИН #{self.spin_index + 1}] ---")
+                            self._log(f" Режим: {eff_mode} (Сырой: {self.current_mode}) | Шаг: {self.current_step} | CDT: {self.cdt:,.0f} ₽")
+                            self._log(f" Действие: {self.last_event}")
+
+                            self._emit_status("PLACING_BET", {
+                                "bet": next_bet,
+                                "color": rec_color,
+                                "step": self.current_step,
+                                "mode": eff_mode,
+                                "msg": self.last_event
+                            })
+
+                            if self.config.post_spin_cooldown_sec > 0:
+                                time.sleep(self.config.post_spin_cooldown_sec)
+
+                            # Place bet & click Play immediately
+                            self._execute_bet_and_play(pts, rec_color, next_bet)
+                            spin_start_t = time.time()
+
+                            self.last_event = f"Вращение колеса... (Ставка {next_bet:,.0f} ₽ на {rec_color})"
+                            self._emit_status("SPINNING", {
+                                "bet": next_bet,
+                                "color": rec_color,
+                                "msg": self.last_event
+                            })
+
+                            # Round is underway; exit dynamic scan and proceed to quiet sleep
                             break
 
                     time.sleep(self.config.poll_interval_sec)
 
-                # Check Stop-loss / Take-profit
-                if self.bankroll <= self.initial_bankroll * self.config.stop_loss_pct:
-                    self.stop_reason = f"Сработал Stop-Loss (баланс упал ниже {self.config.stop_loss_pct*100:.0f}%)"
-                    self.last_event = f"[СТОП-ЛОСС] Баланс исчерпан ({self.bankroll:,.0f} ₽). Игра остановлена."
-                    self._log(f"\n[STOP] {self.last_event}")
-                    self._emit_status("STOP_LOSS_REACHED", {"msg": self.last_event, "stop_reason": self.stop_reason})
-                    self.is_running = False
-                    break
-
-                if self.config.take_profit_target and self.bankroll >= self.config.take_profit_target:
-                    self.stop_reason = f"Достигнута цель по прибыли ({self.config.take_profit_target:,.0f} ₽)"
-                    self.last_event = f"[ЦЕЛЬ ВЗЯТА] Баланс достиг {self.bankroll:,.0f} ₽! Сессия завершена."
-                    self._log(f"\n[TARGET] {self.last_event}")
-                    self._emit_status("TAKE_PROFIT_REACHED", {"msg": self.last_event, "stop_reason": self.stop_reason})
-                    self.is_running = False
-                    break
+                # If watchdog broke out without outcome, recover dialog and bet
+                if not outcome_detected and self.is_running:
+                    time.sleep(1.0)
+                    scene_recover = self.adb.screencap()
+                    if scene_recover is not None:
+                        anchor = self.vision.detect_casino_dialog(scene_recover)
+                        if anchor:
+                            pts = self.vision.get_ui_click_points(anchor)
+                            # Re-trigger current bet
+                            self._execute_bet_and_play(pts, rec_color, next_bet)
+                            spin_start_t = time.time()
 
         except Exception as exc:
             import traceback

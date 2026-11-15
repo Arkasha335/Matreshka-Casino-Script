@@ -47,9 +47,9 @@ class BotConfig:
     # Performance & Speed (Dynamic scanning: max speed & 100% lag-resilient)
     fast_mode: bool = True # Mechanical fast betting (minimal delay)
     spin_sleep_sec: float = 4.8 # Initial quiet sleep while wheel spins (0% CPU)
-    min_spin_duration_sec: float = 5.2 # Minimum physical spin duration to avoid reading flickering cells
-    poll_interval_sec: float = 0.12 # Dynamic scan rate (~8 times/sec for instant reaction)
-    post_spin_cooldown_sec: float = 0.35 # Minimal delay after outcome before placing next bet
+    min_spin_duration_sec: float = 5.0 # Minimum physical spin duration to avoid reading flickering cells
+    poll_interval_sec: float = 0.05 # Dynamic scan rate (with ~220ms raw capture = 3-4 scans/sec)
+    post_spin_cooldown_sec: float = 0.04 # Minimal safety buffer before batched atomic betting
     watchdog_timeout_sec: float = 40.0 # Timeout for round completion
     
     # Paths

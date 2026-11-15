@@ -104,8 +104,24 @@ class ADBController:
     def screencap(self) -> Optional[np.ndarray]:
         """
         Captures the screen directly in memory without disk I/O.
-        Features Windows CRLF auto-repair and reconnect resilience.
+        Features high-speed raw framebuffer fast-path (<220ms),
+        with automatic fallback to 'screencap -p' and Windows CRLF auto-repair.
         """
+        # Fast path: Raw uncompressed framebuffer (~220ms vs 720ms for -p)
+        try:
+            res = self._run_cmd(["exec-out", "screencap"], timeout=4.0)
+            data = res.stdout if (res.returncode == 0 and res.stdout) else b""
+            if len(data) >= 16:
+                w = int.from_bytes(data[0:4], byteorder='little')
+                h = int.from_bytes(data[4:8], byteorder='little')
+                expected = 16 + w * h * 4
+                if 0 < w <= 3840 and 0 < h <= 2160 and len(data) >= expected:
+                    pixels = np.frombuffer(data[16:expected], dtype=np.uint8).reshape((h, w, 4))
+                    return cv2.cvtColor(pixels, cv2.COLOR_RGBA2BGR)
+        except Exception:
+            pass
+
+        # Fallback: PNG screencap (-p) with CRLF recovery
         res = self._run_cmd(["exec-out", "screencap", "-p"])
         data = res.stdout if (res.returncode == 0 and res.stdout) else b""
 
@@ -166,3 +182,40 @@ class ADBController:
             # Android KEYCODE_ENTER = 66
             self.keyevent(66)
             time.sleep(post_delay)
+
+    def batched_bet(
+        self,
+        color_x: int,
+        color_y: int,
+        play_x: int,
+        play_y: int,
+        bet_amount: Optional[int] = None,
+        bet_input_pt: Optional[Tuple[int, int]] = None,
+        changed: bool = False,
+        jitter: int = 1
+    ):
+        """
+        Executes color selection, bet amount input (if changed), and 'Играть' click
+        in a SINGLE atomic ADB shell command chain.
+        Reduces ADB latency from ~600-800ms down to ~150-250ms.
+        """
+        cx = max(0, color_x + random.randint(-jitter, jitter)) if jitter > 0 else color_x
+        cy = max(0, color_y + random.randint(-jitter, jitter)) if jitter > 0 else color_y
+        px = max(0, play_x + random.randint(-jitter, jitter)) if jitter > 0 else play_x
+        py = max(0, play_y + random.randint(-jitter, jitter)) if jitter > 0 else play_y
+
+        if changed and bet_amount is not None and bet_input_pt is not None:
+            bx = max(0, bet_input_pt[0] + random.randint(-jitter, jitter)) if jitter > 0 else bet_input_pt[0]
+            by = max(0, bet_input_pt[1] + random.randint(-jitter, jitter)) if jitter > 0 else bet_input_pt[1]
+            cmd = (
+                f"input tap {cx} {cy}; sleep 0.03; "
+                f"input tap {bx} {by}; sleep 0.03; "
+                f"input keyevent 67 67 67 67 67 67 67 67; sleep 0.02; "
+                f"input text {bet_amount}; sleep 0.02; "
+                f"input keyevent 66; sleep 0.03; "
+                f"input tap {px} {py}"
+            )
+        else:
+            cmd = f"input tap {cx} {cy}; sleep 0.03; input tap {px} {py}"
+
+        self._run_cmd(["shell", cmd], timeout=8.0)
