@@ -93,7 +93,8 @@ def predict_v13(hist, window=15, min_cmax=3):
     return rec
 
 def predict_v15(hist, window=24):
-    return predict_v14(hist, window=window)
+    rec, _, _ = PrngDetectorMirror.get_recommendation_and_confidence(hist)
+    return rec
 
 def predict_v14(hist, window=15):
     if not hist: return 'RED'
@@ -135,7 +136,8 @@ def predict_v14(hist, window=15):
     return rec
 
 def predict_v15(hist, window=24):
-    return predict_v14(hist, window=window)
+    rec, _, _ = PrngDetectorMirror.get_recommendation_and_confidence(hist)
+    return rec
 
 def cfg_1m(profile, mode, cap):
     cap = max(10_000, cap)

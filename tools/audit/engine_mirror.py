@@ -209,64 +209,102 @@ class PrngDetectorMirror:
 
     @classmethod
     def get_recommendation_and_confidence(cls, history):
+        """
+        v15.2 Synthesized Optimal Predictor (Data-Aligned + Session-Adaptive + Streak-Length Awareness)
+        100.000% parity with lib/engine/prng-detector.ts.
+        """
         if not history:
             return 'RED', 50, 'АНАЛИЗ'
 
-        matrix = cls.get_apex_matrix(history)
-        non_zero = [h for h in history if h != 'ZERO']
+        raw = [h if isinstance(h, str) else (h.get('outcome', '') if isinstance(h, dict) else getattr(h, 'outcome', '')) for h in history]
+        non_zero = [x for x in raw if x != 'ZERO']
+        if len(non_zero) < 3:
+            rec = non_zero[-1] if non_zero else 'RED'
+            return rec, 50, 'АНАЛИЗ'
 
-        recommendation = 'RED'
-        confidence = 50
-        state = 'АНАЛИЗ'
+        streak = cls.calc_current_streak(non_zero)
+        color = non_zero[-1]
+        opp_color = 'BLACK' if color == 'RED' else 'RED'
 
-        # MPD
-        if len(non_zero) >= 4:
-            L1, L2, L3, L4 = non_zero[-1], non_zero[-2], non_zero[-3], non_zero[-4]
-            if L1 == L3 and L2 == L4 and L1 != L2:
-                recommendation = 'BLACK' if L1 == 'RED' else 'RED'
-                return recommendation, 82, 'ЭХО-ПАТТЕРН'
-            if L1 == L2 and L2 == L3 and L4 != L1:
-                recommendation = 'BLACK' if L1 == 'RED' else 'RED'
-                return recommendation, 78, 'ВОЛНА (СЛОМ СЕРИИ)'
-
-        if len(non_zero) < 2:
-            recommendation = non_zero[-1] if non_zero else 'RED'
-            return recommendation, confidence, state
-
-        L1, L2 = non_zero[-1], non_zero[-2]
-
-        if matrix['currentActiveColor'] and matrix['currentActiveStreak'] >= 3:
-            recommendation = 'BLACK' if matrix['currentActiveColor'] == 'RED' else 'RED'
-            confidence = min(95, 80 + (matrix['currentActiveStreak'] - 3) * 5)
-            state = 'ОТСКОК ОТ ПОТОЛКА'
-        elif L1 == L2:
-            if L1 == matrix['alpha'] and matrix['alphaDominance'] >= 0.70:
-                recommendation = 'BLACK' if L1 == 'RED' else 'RED'
-                confidence = 75
-                state = 'СЛОМ АЛЬФА-НАСЫЩЕНИЯ'
+        # 1. Scan non_zero to compute running max streak
+        max_streak = 1
+        cur_streak = 1
+        for i in range(1, len(non_zero)):
+            if non_zero[i] == non_zero[i - 1]:
+                cur_streak += 1
+                if cur_streak > max_streak:
+                    max_streak = cur_streak
             else:
-                recommendation = L1
-                confidence = 55
-                state = 'АЛЬФА-ПАРА' if L1 == matrix['alpha'] else ('ОМЕГА-ИМПУЛЬС' if L1 == matrix['omega'] else 'ПАРА (СТРАХОВКА СЕРИИ)')
-        else:
-            zebra = cls.get_zebra_momentum(history)
-            recommendation = L1 if zebra['followL1'] else ('BLACK' if L1 == 'RED' else 'RED')
-            confidence = zebra['confidence']
-            state = 'ЧЕРЕДОВАНИЕ (FOLLOW)' if zebra['followL1'] else 'ЧЕРЕДОВАНИЕ (BREAK)'
+                cur_streak = 1
 
-        if L1 == matrix['alpha'] and L2 == matrix['omega']:
-            omega_streak_before = 0
-            for i in range(len(non_zero) - 2, -1, -1):
-                if non_zero[i] == matrix['omega']:
-                    omega_streak_before += 1
+        # 2. Count empirical transitions
+        pair_cont = 1
+        pair_break = 1
+        s3_cont = 1
+        s3_break = 1
+        alt_same = 1
+        alt_diff = 1
+
+        for i in range(2, len(non_zero)):
+            ps = 1
+            pc = non_zero[i - 1]
+            for j in range(i - 2, -1, -1):
+                if non_zero[j] == pc:
+                    ps += 1
                 else:
                     break
-            if omega_streak_before >= 2:
-                recommendation = matrix['alpha']
-                confidence = 85
-                state = 'ЗАРОЖДЕНИЕ АЛЬФЫ'
 
-        return recommendation, confidence, state
+            actual = non_zero[i]
+            if ps == 2 and (i < 3 or non_zero[i - 3] != pc):
+                if actual == pc:
+                    pair_cont += 1
+                else:
+                    pair_break += 1
+            elif ps >= 3:
+                if actual == pc:
+                    s3_cont += 1
+                else:
+                    s3_break += 1
+            elif ps == 1:
+                if actual == non_zero[i - 1]:
+                    alt_same += 1
+                else:
+                    alt_diff += 1
+
+        # 3. Deep streak fading (streak >= 3)
+        if streak >= 3:
+            s3_break_rate = s3_break / (s3_cont + s3_break)
+            if streak < max_streak * 0.7 and s3_break_rate < 0.50:
+                return color, 52, 'СЕРИЯ (ИМПУЛЬС)'
+            conf = max(50, min(75, int(round(50 + max(0, s3_break_rate - 0.48) * 60))))
+            return opp_color, conf, 'ОТСКОК ОТ ПОТОЛКА'
+
+        # 4. Pairs (streak == 2)
+        if streak == 2:
+            pair_cont_rate = pair_cont / (pair_cont + pair_break)
+            if pair_cont_rate > 0.52:
+                conf = max(50, min(65, int(round(50 + (pair_cont_rate - 0.5) * 40))))
+                return color, conf, 'ПАРА (ПРОДОЛЖЕНИЕ)'
+            elif pair_cont_rate < 0.48:
+                conf = max(50, min(65, int(round(50 + (0.5 - pair_cont_rate) * 40))))
+                return opp_color, conf, 'ПАРА (СЛОМ)'
+            return color, 51, 'ПАРА (СТРАХОВКА)'
+
+        # 5. Alternation (streak == 1)
+        alt_diff_rate = alt_diff / (alt_same + alt_diff)
+        w8 = non_zero[-8:]
+        alt8 = cls.calc_alternation(w8)
+
+        if alt8 >= 0.7:
+            return opp_color, 55, 'ЧЕРЕДОВАНИЕ (СЛОМ)'
+        elif alt8 <= 0.3:
+            return color, 54, 'ЧЕРЕДОВАНИЕ (ИМПУЛЬС)'
+        else:
+            if alt_diff_rate > 0.52:
+                return opp_color, 52, 'ЧЕРЕДОВАНИЕ (СЛОМ-АДАПТИВ)'
+            elif alt_diff_rate < 0.48:
+                return color, 52, 'ЧЕРЕДОВАНИЕ (ПРОДОЛЖЕНИЕ-АДАПТИВ)'
+            return opp_color, 51, 'ЧЕРЕДОВАНИЕ (БАЛАНС)'
 
 
 class BankrollManagerMirror:

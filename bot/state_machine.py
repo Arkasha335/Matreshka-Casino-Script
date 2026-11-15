@@ -121,6 +121,7 @@ class CasinoBot:
             "recommendation_state": self.last_prediction.get("state", "АНАЛИЗ"),
             "confidence": self.last_prediction.get("confidence", 50),
             "history_len": len(self.history),
+            "color_history": list(self.history[-40:]),
             "last_win_num": self.last_winning_num,
             "last_event": self.last_event,
             "stop_reason": self.stop_reason,

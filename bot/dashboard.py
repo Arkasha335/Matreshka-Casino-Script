@@ -12,6 +12,16 @@ import signal
 import traceback
 from typing import Dict, List, Optional, Any
 
+# Enable ANSI color codes on Windows 10+
+if os.name == 'nt':
+    os.system('')  # Triggers ANSI escape code processing in Windows Terminal
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    except Exception:
+        pass
+
 # Ensure project root is in path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
@@ -150,7 +160,7 @@ class MasterDashboard:
         profit_total_str = f"{total_profit:+,.0f} ₽"
 
         print("=" * 88)
-        print("           МАТРЁШКА RP • ИНТЕРАКТИВНЫЙ ЦЕНТР УПРАВЛЕНИЯ БОТАМИ (v15.0 APEX)")
+        print("           МАТРЁШКА RP • ИНТЕРАКТИВНЫЙ ЦЕНТР УПРАВЛЕНИЯ БОТАМИ (v15.2 FARM)")
         print("=" * 88)
         print(f" ОБЩИЙ ДОХОД: {profit_total_str:<12} | АКТИВНО: {active_count}/{len(self.active_bots)} ботов | СПИНОВ: {total_spins} | ВРЕМЯ: {format_seconds(uptime)}")
         print("-" * 88)
@@ -231,6 +241,32 @@ class MasterDashboard:
                 print(f" │   • Режим: {mode_str} | Шаг: {step} | CDT: {cdt:,.0f} ₽ | Пик: {peak:,.0f} ₽ | Просадка: {max_dd:,.0f} ₽")
                 print(f" │   • Аналитика: {rec_state} (Уверенность: {conf}%){flag_str}")
                 print(f" └── • Событие: {event}")
+                
+                # Live Color History Strip (last 40 outcomes)
+                color_hist = t.get("color_history", [])
+                if color_hist:
+                    strip = " │   🎰 "
+                    for c in color_hist[-40:]:
+                        if c == 'RED':
+                            strip += "\033[91m●\033[0m"  # Bright red
+                        elif c == 'BLACK':
+                            strip += "\033[90m●\033[0m"  # Dark gray (black)
+                        elif c == 'ZERO':
+                            strip += "\033[92m◆\033[0m"  # Green diamond
+                    
+                    # Show last 10 with labels for readability
+                    recent = color_hist[-10:]
+                    label_strip = " │   📋 Последние: "
+                    for c in recent:
+                        if c == 'RED':
+                            label_strip += "\033[91mК\033[0m "
+                        elif c == 'BLACK':
+                            label_strip += "\033[90mЧ\033[0m "
+                        elif c == 'ZERO':
+                            label_strip += "\033[92m0\033[0m "
+                    
+                    print(strip)
+                    print(label_strip)
                 if err:
                     print(f"     [!] ОШИБКА В ПОТОКЕ: {err.splitlines()[-1] if err.splitlines() else err}")
 
@@ -313,7 +349,7 @@ class MasterDashboard:
             bankroll = 1_000_000
 
         # Mode
-        print("\nВыберите режим игры (v15.1 Commercial Farm Release):")
+        print("\nВыберите режим игры (v15.2 Commercial Farm Release · Synthesized Optimal):")
         print("  0) [БЕТА-ТЕСТ] Безопасная тестовая крутка со ставкой ровно 1 000 ₽")
         print("  1) APEX_FARM           - Идеальный баланс для фермы (Основной AFK, N=8/10/10)")
         print("  2) TURBO_VELOCITY      - Спринт / Высокий доход (Умеренный азарт, N=8/9/10)")

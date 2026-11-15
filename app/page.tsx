@@ -1013,7 +1013,7 @@ export default function MatreshkaQuantum() {
               <span className="font-[family-name:var(--font-display)] text-[11px] font-bold tracking-widest text-neutral-300 uppercase">
                 MATRESHKA QUANTUM
               </span>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v15.1 COMMERCIAL FARM</span>
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v15.2 COMMERCIAL FARM</span>
               <span className="text-[11px] font-mono tabular-nums text-neutral-400 bg-[#0B0B0D] border border-white/[0.08] px-2 py-0.5 rounded-md">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
@@ -1570,7 +1570,7 @@ export default function MatreshkaQuantum() {
               className="bg-[#0B0B0D] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl"
             >
               <div className="flex justify-between items-center border-b border-white/[0.07] pb-3">
-                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v15.1 Commercial Farm</h3>
+                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v15.2 Commercial Farm (Synthesized Optimal)</h3>
                 <button onClick={() => setShowProfileModal(false)} className="text-neutral-400 hover:text-white cursor-pointer">✕</button>
               </div>
 
