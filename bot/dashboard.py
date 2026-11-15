@@ -313,11 +313,11 @@ class MasterDashboard:
             bankroll = 1_000_000
 
         # Mode
-        print("\nВыберите режим игры:")
-        print("  0) [БЕТА-ТЕСТ] Безопасная крутка со ставкой ровно 1 000 ₽ (Рекомендуется)")
-        print("  1) APEX_IDEAL          - Сбалансированный боевой доход")
-        print("  2) TURBO_HARVEST       - Максимальная агрессивная прибыль")
-        print("  3) SHIELD_CONSERVATIVE - Максимальная защита от просадок")
+        print("\nВыберите режим игры (v15.1 Commercial Farm Release):")
+        print("  0) [БЕТА-ТЕСТ] Безопасная тестовая крутка со ставкой ровно 1 000 ₽")
+        print("  1) APEX_FARM           - Идеальный баланс для фермы (Основной AFK, N=8/10/10)")
+        print("  2) TURBO_VELOCITY      - Спринт / Высокий доход (Умеренный азарт, N=8/9/10)")
+        print("  3) SHIELD_FORTRESS     - Максимальная броня (Для малых банков, N=10 + Micro-Harvest)")
         p_in = input("Выберите [0/1/2/3, по умолчанию 0]: ").strip()
         if p_in.lower() in ('b', 'back', 'отмена'):
             return

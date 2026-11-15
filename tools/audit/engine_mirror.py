@@ -272,45 +272,34 @@ class PrngDetectorMirror:
 class BankrollManagerMirror:
     @staticmethod
     def get_calibrated_ladder_config(profile, mode, bankroll):
-        b = max(GAME_RULES['MIN_BET'] * 10, bankroll)
-        if profile == 'TURBO_HARVEST':
-            if b >= 3000000:
-                if mode == 'ZEBRA': return 3500, 9
-                if mode == 'TRANSITION': return 1800, 10
-                return 1000, 10
-            elif b >= 1800000:
-                if mode == 'ZEBRA': return 2500, 9
-                if mode == 'TRANSITION': return 1500, 10
-                return 1000, 10
+        cap = max(GAME_RULES['MIN_BET'] * 10, bankroll)
+        if profile == 'SHIELD_CONSERVATIVE':
+            target_steps = 10
+            if cap >= 2500000:
+                nominal_b0 = 2500 if mode == 'ZEBRA' else (1800 if mode == 'TRANSITION' else 1200)
+            elif cap >= 1500000:
+                nominal_b0 = 2000 if mode == 'ZEBRA' else (1400 if mode == 'TRANSITION' else 1000)
             else:
-                if mode == 'ZEBRA': return 1500, 10
-                return 1000, 10
-        elif profile == 'SHIELD_CONSERVATIVE':
-            if b >= 3000000:
-                if mode == 'ZEBRA': return 2000, 10
-                if mode == 'TRANSITION': return 1200, 10
-                return 1000, 10
-            elif b >= 1800000:
-                if mode == 'ZEBRA': return 1500, 10
-                if mode == 'TRANSITION': return 1000, 10
-                return 1000, 10
+                nominal_b0 = 1400 if mode == 'ZEBRA' else (1100 if mode == 'TRANSITION' else 1000)
+        elif profile == 'TURBO_HARVEST':
+            if cap >= 3000000:
+                if mode == 'ZEBRA': nominal_b0, target_steps = 6500, 8
+                elif mode == 'TRANSITION': nominal_b0, target_steps = 4000, 9
+                else: nominal_b0, target_steps = 2000, 10
             else:
-                return 1000, 10
+                if mode == 'ZEBRA': nominal_b0, target_steps = 4500, 8
+                elif mode == 'TRANSITION': nominal_b0, target_steps = 3000, 9
+                else: nominal_b0, target_steps = 1500, 10
         else:  # APEX_IDEAL
-            if b >= 3000000:
-                if mode == 'ZEBRA': return 3000, 9
-                if mode == 'TRANSITION': return 1500, 10
-                return 1000, 10
-            elif b >= 1800000:
-                if mode == 'ZEBRA': return 2000, 9
-                if mode == 'TRANSITION': return 1200, 10
-                return 1000, 10
-            elif b >= 1000000:
-                if mode == 'ZEBRA': return 1500, 10
-                if mode == 'TRANSITION': return 1000, 10
-                return 1000, 10
+            if cap >= 3500000:
+                if mode == 'ZEBRA': nominal_b0, target_steps = 4500, 8
+                elif mode == 'TRANSITION': nominal_b0, target_steps = 2500, 10
+                else: nominal_b0, target_steps = 1400, 10
             else:
-                return 1000, 10
+                if mode == 'ZEBRA': nominal_b0, target_steps = 4000, 8
+                elif mode == 'TRANSITION': nominal_b0, target_steps = 2200, 10
+                else: nominal_b0, target_steps = 1200, 10
+        return nominal_b0, target_steps
 
     @classmethod
     def get_engine_params(cls, profile, mode, bankroll):
@@ -342,6 +331,8 @@ class BankrollManagerMirror:
             return min(base_bet, max(GAME_RULES['MIN_BET'], bankroll))
 
         target_steps = params['stepsToLimit'] or 10
+        if step > target_steps:
+            return base_bet
         terminal_cap = max(GAME_RULES['MIN_BET'], min(GAME_RULES['MAX_BET'], math.floor(bankroll / 1.90)))
         remaining = max(1, target_steps - step + 1)
 

@@ -15,3 +15,4 @@ bot/logs/*.csv
 bot/logs/*.jsonl
 !bot/logs/session_20261115_170632.jsonl
 !bot/logs/session_20261115_184755.jsonl
+!bot/logs/session_20261115_200052.jsonl

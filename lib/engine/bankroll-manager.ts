@@ -82,10 +82,10 @@ export class BankrollManager {
   }
 
   /**
-   * Calibrated v15.0 FINAL APEX Base Bet & Target Step Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
-   * - SHIELD: N=10/10/10 (1.7k/1.2k/1.0k) - maximum survivability (100% real win >= 2M)
-   * - APEX OPT: N=8/10/10 (5.0k/2.5k/1.4k) - 96.7% win (29/30) with Zero-Shock Guard & 0 busts across full history
-   * - TURBO: >=3M -> N=7/8/9 (8.5k/5.0k/2.0k) | <3M -> N=8/8/8 (6.5k/4.5k/2.5k) - peak aggressive EV (+5.3M RUB)
+   * Calibrated v15.1 Commercial Farm Matrix strictly bounded by GAME_RULES.MAX_BET (1,000,000 RUB):
+   * - SHIELD_FORTRESS: Dynamic Tiered Micro-Harvest (N=10/10/10) with +80% higher yield at >=2.5M capital (2.5k/1.8k/1.2k)
+   * - APEX_FARM: The 100% Automated Gold Standard for Multi-Account Farms (N=8/10/10, 4.5k/2.5k/1.4k >=3.5M; 4.0k/2.2k/1.2k <3.5M)
+   * - TURBO_VELOCITY: Calibrated N=8/9/10 (6.5k/4.0k/2.0k >=3M; 4.5k/3.0k/1.5k <3M) - prevents premature sequence busts while maximizing EV
    */
   public static getCalibratedLadderConfig(
     profile: StrategyProfile,
@@ -102,35 +102,64 @@ export class BankrollManager {
     let targetSteps: number;
 
     if (profile === 'SHIELD_CONSERVATIVE') {
+      // v15.1 SHIELD_FORTRESS: Dynamic Tiered Micro-Harvest
       targetSteps = 10;
-      nominalB0 = mode === 'ZEBRA' ? 1700 : mode === 'TRANSITION' ? 1200 : 1000;
+      if (cap >= 2500000) {
+        nominalB0 = mode === 'ZEBRA' ? 2500 : mode === 'TRANSITION' ? 1800 : 1200;
+      } else if (cap >= 1500000) {
+        nominalB0 = mode === 'ZEBRA' ? 2000 : mode === 'TRANSITION' ? 1400 : 1000;
+      } else {
+        nominalB0 = mode === 'ZEBRA' ? 1400 : mode === 'TRANSITION' ? 1100 : 1000;
+      }
     } else if (profile === 'TURBO_HARVEST') {
+      // v15.1 TURBO_VELOCITY: Calibrated N=8/9/10
       if (cap >= 3000000) {
         if (mode === 'ZEBRA') {
-          nominalB0 = 8500;
-          targetSteps = 7;
-        } else if (mode === 'TRANSITION') {
-          nominalB0 = 5000;
+          nominalB0 = 6500;
           targetSteps = 8;
+        } else if (mode === 'TRANSITION') {
+          nominalB0 = 4000;
+          targetSteps = 9;
         } else {
           nominalB0 = 2000;
-          targetSteps = 9;
+          targetSteps = 10;
         }
       } else {
-        targetSteps = 8;
-        nominalB0 = mode === 'ZEBRA' ? 6500 : mode === 'TRANSITION' ? 4500 : 2500;
+        if (mode === 'ZEBRA') {
+          nominalB0 = 4500;
+          targetSteps = 8;
+        } else if (mode === 'TRANSITION') {
+          nominalB0 = 3000;
+          targetSteps = 9;
+        } else {
+          nominalB0 = 1500;
+          targetSteps = 10;
+        }
       }
     } else {
-      // APEX_IDEAL (v13.0 Verified Matrix: N=8/10/10, 5.0k/2.5k/1.4k)
-      if (mode === 'ZEBRA') {
-        nominalB0 = 5000;
-        targetSteps = 8;
-      } else if (mode === 'TRANSITION') {
-        nominalB0 = 2500;
-        targetSteps = 10;
+      // v15.1 APEX_FARM: The Automated Gold Standard for Multi-Account Farms
+      if (cap >= 3500000) {
+        if (mode === 'ZEBRA') {
+          nominalB0 = 4500;
+          targetSteps = 8;
+        } else if (mode === 'TRANSITION') {
+          nominalB0 = 2500;
+          targetSteps = 10;
+        } else {
+          nominalB0 = 1400;
+          targetSteps = 10;
+        }
       } else {
-        nominalB0 = 1400;
-        targetSteps = 10;
+        if (mode === 'ZEBRA') {
+          nominalB0 = 4000;
+          targetSteps = 8;
+        } else if (mode === 'TRANSITION') {
+          nominalB0 = 2200;
+          targetSteps = 10;
+        } else {
+          nominalB0 = 1200;
+          targetSteps = 10;
+        }
       }
     }
 

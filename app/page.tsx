@@ -124,18 +124,21 @@ const HistoryIcon = React.memo(function HistoryIcon({ entry }: { entry: HistoryE
 
 const emptySubscribe = () => () => {};
 
-const PROFILE_LABELS: Record<StrategyProfile, { title: string; badgeClass: string }> = {
+const PROFILE_LABELS: Record<StrategyProfile, { title: string; badgeClass: string; desc: string }> = {
   APEX_IDEAL: {
-    title: 'APEX OPT',
+    title: 'APEX FARM',
     badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/35 hover:bg-emerald-500/25',
+    desc: 'Идеальный баланс для фермы (Основной AFK)',
   },
   TURBO_HARVEST: {
-    title: 'TURBO',
+    title: 'TURBO VELOCITY',
     badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/35 hover:bg-amber-500/25',
+    desc: 'Спринт / Быстрый доход (Умеренный азарт)',
   },
   SHIELD_CONSERVATIVE: {
-    title: 'SHIELD',
-    badgeClass: 'bg-zinc-200/10 text-zinc-200 border-zinc-400/35 hover:bg-zinc-200/20',
+    title: 'SHIELD FORTRESS',
+    badgeClass: 'bg-cyan-500/15 text-cyan-300 border-cyan-400/35 hover:bg-cyan-500/25',
+    desc: 'Максимальная защита (Низкий банк + высокий yield)',
   },
 };
 
@@ -1010,7 +1013,7 @@ export default function MatreshkaQuantum() {
               <span className="font-[family-name:var(--font-display)] text-[11px] font-bold tracking-widest text-neutral-300 uppercase">
                 MATRESHKA QUANTUM
               </span>
-              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v15.0 FINAL APEX</span>
+              <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/25 px-1.5 py-0.5 rounded">v15.1 COMMERCIAL FARM</span>
               <span className="text-[11px] font-mono tabular-nums text-neutral-400 bg-[#0B0B0D] border border-white/[0.08] px-2 py-0.5 rounded-md">
                 {Math.floor(durationMs / 60000).toString().padStart(2, '0')}:
                 {Math.floor((durationMs % 60000) / 1000).toString().padStart(2, '0')}
@@ -1567,7 +1570,7 @@ export default function MatreshkaQuantum() {
               className="bg-[#0B0B0D] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl"
             >
               <div className="flex justify-between items-center border-b border-white/[0.07] pb-3">
-                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v15.0 FINAL APEX</h3>
+                <h3 className="font-[family-name:var(--font-display)] font-bold text-xs uppercase tracking-widest text-white">Профиль стратегии · v15.1 Commercial Farm</h3>
                 <button onClick={() => setShowProfileModal(false)} className="text-neutral-400 hover:text-white cursor-pointer">✕</button>
               </div>
 
@@ -1592,7 +1595,10 @@ export default function MatreshkaQuantum() {
                         }`}
                       >
                         <div className="font-bold text-emerald-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Sparkles size={14} /> APEX OPT · Основной (Zero-Shield)
+                          <Sparkles size={14} /> APEX FARM · Золотой стандарт фермы
+                        </div>
+                        <div className="text-[10px] text-neutral-400 mb-1">
+                          Идеальный баланс прочности и колоссальной долгосрочной прибыли на дистанции.
                         </div>
                         <div className="text-[11px] text-neutral-300 font-mono">
                           Z: {zApex.baseBet.toLocaleString('ru-RU')} ₽ ({zApex.targetSteps}ш) · T: {tApex.baseBet.toLocaleString('ru-RU')} ₽ ({tApex.targetSteps}ш) · D: {dApex.baseBet.toLocaleString('ru-RU')} ₽ ({dApex.targetSteps}ш)
@@ -1606,7 +1612,10 @@ export default function MatreshkaQuantum() {
                         }`}
                       >
                         <div className="font-bold text-amber-400 text-xs flex items-center gap-1.5 mb-1">
-                          <Zap size={14} /> TURBO · Агрессивный разгон
+                          <Zap size={14} /> TURBO VELOCITY · Спринт / Высокий доход
+                        </div>
+                        <div className="text-[10px] text-neutral-400 mb-1">
+                          Быстрый разгон капитала, умеренный азарт, откалиброванная глубина N=8/9/10.
                         </div>
                         <div className="text-[11px] text-neutral-300 font-mono">
                           Z: {zTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({zTurbo.targetSteps}ш) · T: {tTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({tTurbo.targetSteps}ш) · D: {dTurbo.baseBet.toLocaleString('ru-RU')} ₽ ({dTurbo.targetSteps}ш)
@@ -1616,11 +1625,14 @@ export default function MatreshkaQuantum() {
                       <button
                         onClick={() => { setStrategyProfile('SHIELD_CONSERVATIVE'); setShowProfileModal(false); }}
                         className={`w-full p-3.5 rounded-2xl border text-left transition-all cursor-pointer ${
-                          strategyProfile === 'SHIELD_CONSERVATIVE' ? 'bg-zinc-200/15 border-zinc-300/60 text-white' : 'bg-[#060607] border-white/[0.07] text-neutral-400 hover:border-white/20'
+                          strategyProfile === 'SHIELD_CONSERVATIVE' ? 'bg-cyan-500/15 border-cyan-400/60 text-white' : 'bg-[#060607] border-white/[0.07] text-neutral-400 hover:border-white/20'
                         }`}
                       >
-                        <div className="font-bold text-zinc-200 text-xs flex items-center gap-1.5 mb-1">
-                          <Shield size={14} /> SHIELD · Максимальная броня
+                        <div className="font-bold text-cyan-300 text-xs flex items-center gap-1.5 mb-1">
+                          <Shield size={14} /> SHIELD FORTRESS · Максимальная защита
+                        </div>
+                        <div className="text-[10px] text-neutral-400 mb-1">
+                          Сверхживучесть N=10 для малых банкроллов с динамическим Micro-Harvest (+80% yield).
                         </div>
                         <div className="text-[11px] text-neutral-300 font-mono">
                           Z: {zShield.baseBet.toLocaleString('ru-RU')} ₽ ({zShield.targetSteps}ш) · T: {tShield.baseBet.toLocaleString('ru-RU')} ₽ ({tShield.targetSteps}ш) · D: {dShield.baseBet.toLocaleString('ru-RU')} ₽ ({dShield.targetSteps}ш)

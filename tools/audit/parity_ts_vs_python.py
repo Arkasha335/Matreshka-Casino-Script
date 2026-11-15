@@ -26,6 +26,21 @@ def load_clean():
         h = hashlib.md5(','.join(outs).encode()).hexdigest()
         if outs and h not in seen:
             seen.add(h); res.append((fn, outs))
+
+    bot_logs = [
+        r'bot\logs\session_20261115_170632.jsonl',
+        r'bot\logs\session_20261115_184755.jsonl',
+        r'bot\logs\session_20261115_200052.jsonl'
+    ]
+    for bl in bot_logs:
+        if os.path.exists(bl):
+            fn = os.path.basename(bl)
+            lines = [json.loads(l) for l in open(bl, encoding='utf-8') if l.strip()]
+            outs = [r.get('outcome') or r.get('input_result') for r in lines]
+            outs = [x for x in outs if x in ('RED', 'BLACK', 'ZERO')]
+            h = hashlib.md5(','.join(outs).encode()).hexdigest()
+            if outs and h not in seen:
+                seen.add(h); res.append((fn, outs))
     return res
 
 def calc_net_win(bet):
@@ -126,18 +141,36 @@ def cfg_1m(profile, mode, cap):
     cap = max(10_000, cap)
     scale = max(0.15, min(TABLE_LIMIT, cap / 1.92) / 1_000_000.0)
     if profile == "SHIELD_CONSERVATIVE":
-        b0, n = {'ZEBRA': (1700, 10), 'TRANSITION': (1200, 10), 'DANGER': (1000, 10)}[mode]
+        target_steps = 10
+        if cap >= 2_500_000:
+            nominal_b0 = 2500 if mode == 'ZEBRA' else (1800 if mode == 'TRANSITION' else 1200)
+        elif cap >= 1_500_000:
+            nominal_b0 = 2000 if mode == 'ZEBRA' else (1400 if mode == 'TRANSITION' else 1000)
+        else:
+            nominal_b0 = 1400 if mode == 'ZEBRA' else (1100 if mode == 'TRANSITION' else 1000)
     elif profile == "TURBO_HARVEST":
         if cap >= 3_000_000:
-            b0, n = {'ZEBRA': (8500, 7), 'TRANSITION': (5000, 8), 'DANGER': (2000, 9)}[mode]
+            if mode == 'ZEBRA': nominal_b0, target_steps = 6500, 8
+            elif mode == 'TRANSITION': nominal_b0, target_steps = 4000, 9
+            else: nominal_b0, target_steps = 2000, 10
         else:
-            b0, n = {'ZEBRA': (6500, 8), 'TRANSITION': (4500, 8), 'DANGER': (2500, 8)}[mode]
+            if mode == 'ZEBRA': nominal_b0, target_steps = 4500, 8
+            elif mode == 'TRANSITION': nominal_b0, target_steps = 3000, 9
+            else: nominal_b0, target_steps = 1500, 10
     else:
-        b0, n = {'ZEBRA': (5000, 8), 'TRANSITION': (2500, 10), 'DANGER': (1400, 10)}[mode]
-    while n > 5 and 1000 * geom_sum_factor(n) > cap:
-        n -= 1
-    max_b0 = max(1000, int(math.floor(cap / geom_sum_factor(n) / 100.0) * 100))
-    return max(1000, min(TABLE_LIMIT, max_b0, int(js_round(b0 * scale / 100.0) * 100))), n
+        if cap >= 3_500_000:
+            if mode == 'ZEBRA': nominal_b0, target_steps = 4500, 8
+            elif mode == 'TRANSITION': nominal_b0, target_steps = 2500, 10
+            else: nominal_b0, target_steps = 1400, 10
+        else:
+            if mode == 'ZEBRA': nominal_b0, target_steps = 4000, 8
+            elif mode == 'TRANSITION': nominal_b0, target_steps = 2200, 10
+            else: nominal_b0, target_steps = 1200, 10
+
+    while target_steps > 5 and 1000 * geom_sum_factor(target_steps) > cap:
+        target_steps -= 1
+    max_b0 = max(1000, int(math.floor(cap / geom_sum_factor(target_steps) / 100.0) * 100))
+    return max(1000, min(TABLE_LIMIT, max_b0, int(js_round(nominal_b0 * scale / 100.0) * 100))), target_steps
 
 def solve_exact_budget_x(prev_b, rem_steps, rem_wallet, min_x=2.025, max_x=3.20):
     x_table = math.pow(TABLE_LIMIT / max(1, prev_b), 1.0 / rem_steps)
@@ -179,6 +212,8 @@ def exact_bet_1m(cdt, step, base_bet, target_steps, bankroll, prev_bet):
     if int_w < 1000: return int_w
     base_bet = max(1000, min(int(base_bet), int_w, TABLE_LIMIT))
     if cdt <= 0 or step <= 1: return base_bet
+    if step > target_steps:
+        return base_bet
     rem = max(1, target_steps - step + 1)
     min_tbb = math.ceil(((cdt + base_bet) * 100) / 98.0)
     while calc_net_win(min_tbb) < cdt + base_bet:
@@ -393,7 +428,7 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 else:
                     net = -bet; cdt += bet; step += 1
 
-                is_terminal = not is_win and BankrollManagerMirror.is_terminal_sequence_loss(step - 1, eff_n, bet, TABLE_LIMIT)
+                is_terminal = not is_win and BankrollManagerMirror.is_terminal_sequence_loss(step - 1, seq_n, bet, TABLE_LIMIT)
                 if is_terminal:
                     cdt = 0
                     step = 1
@@ -432,7 +467,14 @@ for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
                 mismatches += 1
                 if mismatches <= 3:
                     print("MISMATCH:", key, "PY_BANK=", bank, "TS_BANK=", ts_rec["bank"])
+                    for i in range(min(len(py_trace), len(ts_rec["trace"]))):
+                        if py_trace[i] != ts_rec["trace"][i]:
+                            print(f"  First mismatch at spin {i+1}:")
+                            print(f"    PY: {py_trace[i]}")
+                            print(f"    TS: {ts_rec['trace'][i]}")
+                            break
 
-print(f"PARITY CHECK v15.0 FINAL APEX (W=24 + SAT_AWARE_ALPHA + DEEP_FADE + ZERO_SHOCK): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
-if mismatches > 0 or inv_failures > 0:
-    sys.exit(1)
+if __name__ == "__main__":
+    print(f"PARITY CHECK v15.0 FINAL APEX (W=24 + SAT_AWARE_ALPHA + DEEP_FADE + ZERO_SHOCK): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
+    if mismatches > 0 or inv_failures > 0:
+        sys.exit(1)
