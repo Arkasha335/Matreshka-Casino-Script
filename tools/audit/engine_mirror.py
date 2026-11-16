@@ -1,5 +1,14 @@
 import math
 import json
+import os
+
+WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), 'neural_weights_v16.json')
+if not os.path.exists(WEIGHTS_PATH):
+    WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'lib', 'engine', 'neural_weights_v16.json')
+
+with open(WEIGHTS_PATH, 'r', encoding='utf-8') as f:
+    NEURAL_WEIGHTS_V16 = json.load(f)
+
 
 GAME_RULES = {
     'TOTAL_SLOTS': 50,
@@ -208,9 +217,163 @@ class PrngDetectorMirror:
             return {'followL1': True, 'confidence': 58}
 
     @classmethod
+    def extract_features(cls, history):
+        """
+        v16.0 APEX-Neural Feature Extractor: extracts 30 causal time-series features.
+        Zero data leakage: strictly uses past spins up to t-1.
+        """
+        if not history or len(history) < 4:
+            return None
+        raw = [h if isinstance(h, str) else (h.get('outcome', '') if isinstance(h, dict) else getattr(h, 'outcome', '')) for h in history]
+        nz = [x for x in raw if x != 'ZERO']
+        if len(nz) < 3:
+            return None
+
+        feats = []
+
+        # 1. Recent raw outcomes (last 8 non-zero spins: RED=+1, BLACK=-1)
+        for k in range(1, 9):
+            if len(nz) >= k:
+                feats.append(1.0 if nz[-k] == 'RED' else -1.0)
+            else:
+                feats.append(0.0)
+
+        # 2. Streak features
+        cur_color = nz[-1]
+        streak = 1
+        for k in range(len(nz) - 2, -1, -1):
+            if nz[k] == cur_color:
+                streak += 1
+            else:
+                break
+        signed_streak = streak if cur_color == 'RED' else -streak
+        feats.append(float(signed_streak))
+        feats.append(float(streak))
+        feats.append(1.0 if streak == 1 else 0.0)
+        feats.append(1.0 if streak == 2 else 0.0)
+        feats.append(1.0 if streak == 3 else 0.0)
+        feats.append(1.0 if streak >= 4 else 0.0)
+
+        # 3. Alternation frequencies (w = 4, 6, 8, 12, 16)
+        for w in [4, 6, 8, 12, 16]:
+            sub = nz[-w:]
+            if len(sub) >= 2:
+                trans = sum(1 for i in range(1, len(sub)) if sub[i] != sub[i - 1])
+                feats.append(trans / (len(sub) - 1))
+            else:
+                feats.append(0.5)
+
+        # 4. Color ratios (w = 8, 16, 24)
+        for w in [8, 16, 24]:
+            sub = nz[-w:]
+            if len(sub) > 0:
+                rc = sum(1 for x in sub if x == 'RED')
+                feats.append(rc / len(sub))
+            else:
+                feats.append(0.5)
+
+        # 5. ZERO clustering
+        z10 = sum(1 for x in raw[-10:] if x == 'ZERO')
+        z25 = sum(1 for x in raw[-25:] if x == 'ZERO')
+        feats.append(float(z10))
+        feats.append(float(z25))
+
+        spins_since_zero = 0
+        for k in range(len(raw) - 1, -1, -1):
+            if raw[k] == 'ZERO':
+                break
+            spins_since_zero += 1
+        feats.append(float(min(spins_since_zero, 30)))
+
+        # 6. Empirical Bayesian session transition trackers
+        pair_cont = 1
+        pair_break = 1
+        s3_cont = 1
+        s3_break = 1
+        alt_same = 1
+        alt_diff = 1
+
+        for i in range(2, len(nz)):
+            ps = 1
+            pc = nz[i - 1]
+            for j in range(i - 2, -1, -1):
+                if nz[j] == pc:
+                    ps += 1
+                else:
+                    break
+            actual = nz[i]
+            if ps == 2 and (i < 3 or nz[i - 3] != pc):
+                if actual == pc:
+                    pair_cont += 1
+                else:
+                    pair_break += 1
+            elif ps >= 3:
+                if actual == pc:
+                    s3_cont += 1
+                else:
+                    s3_break += 1
+            elif ps == 1:
+                if actual == nz[i - 1]:
+                    alt_same += 1
+                else:
+                    alt_diff += 1
+
+        feats.append(pair_cont / (pair_cont + pair_break))
+        feats.append(s3_break / (s3_cont + s3_break))
+        feats.append(alt_diff / (alt_same + alt_diff))
+
+        # 7. Micro-patterns (A-B-A and A-A-B)
+        feats.append(1.0 if (len(nz) >= 3 and nz[-1] == nz[-3] and nz[-1] != nz[-2]) else 0.0)
+        feats.append(1.0 if (len(nz) >= 3 and nz[-2] == nz[-3] and nz[-1] != nz[-2]) else 0.0)
+
+        return feats
+
+    @classmethod
+    def forward_neural(cls, feats):
+        """
+        Pure forward inference pass through 24-12 MLP Neural Network.
+        100.000% parity with lib/engine/prng-detector.ts.
+        """
+        mu = NEURAL_WEIGHTS_V16['scaler']['mean']
+        scale = NEURAL_WEIGHTS_V16['scaler']['scale']
+        w1 = NEURAL_WEIGHTS_V16['weights']['w1']
+        b1 = NEURAL_WEIGHTS_V16['weights']['b1']
+        w2 = NEURAL_WEIGHTS_V16['weights']['w2']
+        b2 = NEURAL_WEIGHTS_V16['weights']['b2']
+        w3 = NEURAL_WEIGHTS_V16['weights']['w3']
+        b3 = NEURAL_WEIGHTS_V16['weights']['b3'][0]
+
+        # Standardize input features
+        z = [(feats[i] - mu[i]) / scale[i] for i in range(30)]
+
+        # Layer 1: 30 -> 24, Tanh
+        h1 = []
+        for j in range(24):
+            val = b1[j]
+            for i in range(30):
+                val += z[i] * w1[i][j]
+            h1.append(math.tanh(val))
+
+        # Layer 2: 24 -> 12, Tanh
+        h2 = []
+        for k in range(12):
+            val = b2[k]
+            for j in range(24):
+                val += h1[j] * w2[j][k]
+            h2.append(math.tanh(val))
+
+        # Output layer: 12 -> 1, Sigmoid
+        out_val = b3
+        for k in range(12):
+            out_val += h2[k] * w3[k][0]
+
+        p_red = 1.0 / (1.0 + math.exp(-out_val))
+        return round(p_red * 1_000_000) / 1_000_000
+
+    @classmethod
     def get_recommendation_and_confidence(cls, history):
         """
-        v15.2 Synthesized Optimal Predictor (Data-Aligned + Session-Adaptive + Streak-Length Awareness)
+        v16.0 APEX-Neural Predictor (Deep Neural Network + Bayesian Gated Fallback)
         100.000% parity with lib/engine/prng-detector.ts.
         """
         if not history:
@@ -222,6 +385,20 @@ class PrngDetectorMirror:
             rec = non_zero[-1] if non_zero else 'RED'
             return rec, 50, 'АНАЛИЗ'
 
+        # --- v16.0 APEX-Neural Evaluation ---
+        feats = cls.extract_features(history)
+        if feats is not None:
+            p_red = cls.forward_neural(feats)
+            theta = NEURAL_WEIGHTS_V16.get('theta', 0.06)
+            if abs(p_red - 0.5) >= theta:
+                if p_red >= 0.5:
+                    conf = max(50, min(85, int(round(p_red * 100))))
+                    return 'RED', conf, 'НЕЙРОСЕТЬ APEX-16'
+                else:
+                    conf = max(50, min(85, int(round((1.0 - p_red) * 100))))
+                    return 'BLACK', conf, 'НЕЙРОСЕТЬ APEX-16'
+
+        # --- Fallback: v15.2 Synthesized Optimal Predictor ---
         streak = cls.calc_current_streak(non_zero)
         color = non_zero[-1]
         opp_color = 'BLACK' if color == 'RED' else 'RED'

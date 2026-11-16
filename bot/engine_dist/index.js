@@ -15,6 +15,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require("./types"), exports);
+__exportStar(require("./neural-weights"), exports);
 __exportStar(require("./prng-detector"), exports);
 __exportStar(require("./risk-guard"), exports);
 __exportStar(require("./bankroll-manager"), exports);

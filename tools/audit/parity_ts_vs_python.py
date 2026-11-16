@@ -246,6 +246,7 @@ cmd = [
     "npx.cmd" if os.name == "nt" else "npx",
     "tsc",
     os.path.join(REPO_ROOT, "lib", "engine", "types.ts"),
+    os.path.join(REPO_ROOT, "lib", "engine", "neural-weights.ts"),
     os.path.join(REPO_ROOT, "lib", "engine", "prng-detector.ts"),
     os.path.join(REPO_ROOT, "lib", "engine", "bankroll-manager.ts"),
     "--outDir", OUT_DIR,
