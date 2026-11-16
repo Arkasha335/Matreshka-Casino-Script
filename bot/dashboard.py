@@ -127,10 +127,19 @@ class MasterDashboard:
         self.is_running = True
         self.start_time = time.time()
         self.last_status_msg = "Готов к работе. Выберите команду управления."
+        self._cached_devices: Dict[str, Any] = {}
+        self._last_devices_poll: float = 0.0
 
-    def get_detected_devices(self) -> Dict[str, Any]:
-        """Queries MuMu Player CLI for instances."""
-        return MuMuManagerCLI.get_instances_info()
+    def get_detected_devices(self, force: bool = False) -> Dict[str, Any]:
+        """Queries MuMu Player CLI for instances with smart caching (10s TTL) to eliminate UI lag."""
+        now = time.time()
+        if force or (now - self._last_devices_poll > 10.0) or not self._cached_devices:
+            try:
+                self._cached_devices = MuMuManagerCLI.get_instances_info()
+                self._last_devices_poll = now
+            except Exception:
+                pass
+        return self._cached_devices
 
     def _read_key(self) -> Optional[str]:
         """Non-blocking keyboard check on Windows."""
@@ -242,31 +251,18 @@ class MasterDashboard:
                 print(f" │   • Аналитика: {rec_state} (Уверенность: {conf}%){flag_str}")
                 print(f" └── • Событие: {event}")
                 
-                # Live Color History Strip (last 40 outcomes)
+                # Live Color History Strip (last 30 outcomes)
                 color_hist = t.get("color_history", [])
                 if color_hist:
-                    strip = " │   🎰 "
-                    for c in color_hist[-40:]:
+                    strip = " │   🎰 Исходы: "
+                    for c in color_hist[-30:]:
                         if c == 'RED':
-                            strip += "\033[91m●\033[0m"  # Bright red
+                            strip += "\033[91m●\033[0m "  # Bright red
                         elif c == 'BLACK':
-                            strip += "\033[90m●\033[0m"  # Dark gray (black)
+                            strip += "\033[37m●\033[0m "  # Clean white/light-gray
                         elif c == 'ZERO':
-                            strip += "\033[92m◆\033[0m"  # Green diamond
-                    
-                    # Show last 10 with labels for readability
-                    recent = color_hist[-10:]
-                    label_strip = " │   📋 Последние: "
-                    for c in recent:
-                        if c == 'RED':
-                            label_strip += "\033[91mК\033[0m "
-                        elif c == 'BLACK':
-                            label_strip += "\033[90mЧ\033[0m "
-                        elif c == 'ZERO':
-                            label_strip += "\033[92m0\033[0m "
-                    
+                            strip += "\033[92m◆\033[0m "  # Green diamond
                     print(strip)
-                    print(label_strip)
                 if err:
                     print(f"     [!] ОШИБКА В ПОТОКЕ: {err.splitlines()[-1] if err.splitlines() else err}")
 

@@ -168,13 +168,37 @@ class VisionEngine:
             return (int(xt + off[0] * s), int(yt + off[1] * s))
 
         return {
-            "tab_exact_color": _get_pt("tab_exact_color", 273, 315),
+            "tab_exact_color": _get_pt("tab_exact_color", 287, 322),
             "bet_input": _get_pt("bet_input", 215, 395),
             "play_btn": _get_pt("play_btn", 360, 395),
             "close_x": _get_pt("close_x", 545, 25),
             "red_cell": _get_pt("red_cell", 240, 207),
             "black_cell": _get_pt("black_cell", 486, 155),
         }
+
+    def is_exact_color_tab_selected(self, scene: np.ndarray, anchor: Tuple[int, int, float]) -> bool:
+        """
+        Determines whether the 'Точный цвет' tab is actively selected.
+        When active, the tab button glows with a bright purple background (V >= 130, purple ratio >= 65%).
+        When inactive, the background is dark/muted (V <= 110).
+        """
+        xt, yt, s = anchor
+        cx = int(xt + 287 * s)
+        cy = int(yt + 322 * s)
+        h_rad = max(5, int(15 * s))
+        w_rad = max(10, int(35 * s))
+
+        roi = scene[max(0, cy - h_rad):min(scene.shape[0], cy + h_rad),
+                    max(0, cx - w_rad):min(scene.shape[1], cx + w_rad)]
+        if roi.size == 0:
+            return False
+
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, np.array([125, 40, 40]), np.array([170, 255, 255]))
+        purple_ratio = np.count_nonzero(mask) / mask.size
+        mean_v = float(np.mean(hsv[:, :, 2]))
+
+        return (purple_ratio >= 0.65 and mean_v >= 130.0)
 
     def detect_winning_number(self, scene: np.ndarray, anchor: Tuple[int, int, float]) -> Tuple[Optional[int], Optional[Outcome], int]:
         """

@@ -75,6 +75,7 @@ class CasinoBot:
         self.stop_reason: Optional[str] = None
         self.current_state = "IDLE"
         self.current_bet_in_field: Optional[int] = None
+        self.last_payday_check_time: float = 0.0
 
     def _calc_net_win(self, bet: int) -> int:
         """Calculates net win with 2% server tax: round(bet * 98 / 100)."""
@@ -149,8 +150,17 @@ class CasinoBot:
     def is_active(self) -> bool:
         return self.is_running and not self.is_paused
 
-    def handle_payday_if_present(self, scene) -> bool:
-        """Checks and dismisses PayDay check modal if present."""
+    def handle_payday_if_present(self, scene: np.ndarray, force: bool = False) -> bool:
+        """
+        Checks and dismisses PayDay check modal if present.
+        Throttled to run at most once every 3.0s to avoid expensive template matching (175ms)
+        during high-speed outcome polling.
+        """
+        now = time.time()
+        if not force and (now - self.last_payday_check_time < 3.0):
+            return False
+        self.last_payday_check_time = now
+
         is_payday, close_pt = self.vision.is_payday_popup_present(scene)
         if is_payday and close_pt:
             self.last_event = "PayDay проверка: окно закрыто по крестику [X]"
@@ -158,6 +168,34 @@ class CasinoBot:
             self.adb.tap(close_pt[0], close_pt[1], jitter=2)
             time.sleep(0.5)
             return True
+        return False
+
+    def _ensure_exact_color_tab(self, anchor: Tuple[int, int, float], max_retries: int = 5) -> bool:
+        """
+        Ensures that the 'Точный цвет' tab is actively selected before any betting actions.
+        Verifies visually via HSV purple highlight and retries clicking if not active.
+        """
+        pts = self.vision.get_ui_click_points(anchor)
+        tab_pt = pts["tab_exact_color"]
+
+        for attempt in range(1, max_retries + 1):
+            scene = self.adb.screencap()
+            if scene is not None and self.vision.is_exact_color_tab_selected(scene, anchor):
+                self._log(f"[OK] Вкладка 'Точный цвет' активна (подтверждено на попытке {attempt}).")
+                return True
+
+            self.last_event = f"Активация вкладки 'Точный цвет' (попытка {attempt}/{max_retries})..."
+            self._log(f"[*] {self.last_event} Клик в {tab_pt}")
+            self.adb.tap(tab_pt[0], tab_pt[1], jitter=1)
+            time.sleep(0.35)
+
+        # Final check
+        scene = self.adb.screencap()
+        if scene is not None and self.vision.is_exact_color_tab_selected(scene, anchor):
+            self._log("[OK] Вкладка 'Точный цвет' успешно активирована!")
+            return True
+
+        self._log("[WARN] Не удалось визуально подтвердить активацию вкладки 'Точный цвет'.")
         return False
 
     def _execute_bet_and_play(self, pts: Dict[str, Tuple[int, int]], rec_color: Outcome, bet_amount: int):
@@ -235,12 +273,9 @@ class CasinoBot:
                     self._emit_status("WAITING_TABLE", {"msg": self.last_event})
                     time.sleep(1.5)
 
-            # Pre-select "Точный цвет" tab initially
+            # Phase 1.1: Ensure "Точный цвет" tab is activated and visually verified
             if self.is_running and anchor:
-                pts = self.vision.get_ui_click_points(anchor)
-                tab_pt = pts["tab_exact_color"]
-                self.adb.tap(tab_pt[0], tab_pt[1], jitter=2)
-                time.sleep(0.3)
+                self._ensure_exact_color_tab(anchor, max_retries=5)
 
             # ------------------------------------------------------------------
             # Phase 2: Ultra-Fast Pipelined Betting Cycle
@@ -338,6 +373,7 @@ class CasinoBot:
                                 self.is_running = False
                                 break
                         pts = self.vision.get_ui_click_points(anchor)
+                        self._ensure_exact_color_tab(anchor, max_retries=2)
 
                     elapsed = time.time() - spin_start_t
 
@@ -538,6 +574,7 @@ class CasinoBot:
                         anchor = self.vision.detect_casino_dialog(scene_recover)
                         if anchor:
                             pts = self.vision.get_ui_click_points(anchor)
+                            self._ensure_exact_color_tab(anchor, max_retries=2)
                             # Re-trigger current bet
                             self._execute_bet_and_play(pts, rec_color, next_bet)
                             spin_start_t = time.time()
