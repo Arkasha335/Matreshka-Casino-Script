@@ -238,33 +238,34 @@ def exact_bet_1m(cdt, step, base_bet, target_steps, bankroll, prev_bet):
             bet = min(bet, max_safe)
     return max(1000, min(int(math.floor(bet)), TABLE_LIMIT, int_w))
 
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-OUT_DIR = r"C:\Users\user\.gemini\antigravity\brain\8cb8961f-b2d1-43d1-b097-d60fa78963d3\scratch\ts_parity_build"
-os.makedirs(OUT_DIR, exist_ok=True)
+def run_parity_check():
+    REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    OUT_DIR = r"C:\Users\user\.gemini\antigravity\brain\8cb8961f-b2d1-43d1-b097-d60fa78963d3\scratch\ts_parity_build"
+    os.makedirs(OUT_DIR, exist_ok=True)
 
-cmd = [
-    "npx.cmd" if os.name == "nt" else "npx",
-    "tsc",
-    os.path.join(REPO_ROOT, "lib", "engine", "types.ts"),
-    os.path.join(REPO_ROOT, "lib", "engine", "neural-weights.ts"),
-    os.path.join(REPO_ROOT, "lib", "engine", "prng-detector.ts"),
-    os.path.join(REPO_ROOT, "lib", "engine", "bankroll-manager.ts"),
-    "--outDir", OUT_DIR,
-    "--module", "commonjs",
-    "--target", "es2020",
-    "--esModuleInterop",
-    "--skipLibCheck",
-]
-subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+    cmd = [
+        "npx.cmd" if os.name == "nt" else "npx",
+        "tsc",
+        os.path.join(REPO_ROOT, "lib", "engine", "types.ts"),
+        os.path.join(REPO_ROOT, "lib", "engine", "neural-weights.ts"),
+        os.path.join(REPO_ROOT, "lib", "engine", "prng-detector.ts"),
+        os.path.join(REPO_ROOT, "lib", "engine", "bankroll-manager.ts"),
+        "--outDir", OUT_DIR,
+        "--module", "commonjs",
+        "--target", "es2020",
+        "--esModuleInterop",
+        "--skipLibCheck",
+    ]
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
-sessions = load_clean()
-payload = [{"name": fn, "outcomes": outs} for fn, outs in sessions]
-with open(os.path.join(OUT_DIR, "sessions.json"), "w", encoding="utf-8") as f:
-    json.dump(payload, f)
+    sessions = load_clean()
+    payload = [{"name": fn, "outcomes": outs} for fn, outs in sessions]
+    with open(os.path.join(OUT_DIR, "sessions.json"), "w", encoding="utf-8") as f:
+        json.dump(payload, f)
 
-node_runner = os.path.join(OUT_DIR, "run_parity.js")
-with open(node_runner, "w", encoding="utf-8") as f:
-    f.write(r"""
+    node_runner = os.path.join(OUT_DIR, "run_parity.js")
+    with open(node_runner, "w", encoding="utf-8") as f:
+        f.write(r"""
 const fs = require('fs');
 const path = require('path');
 const { BankrollManager } = require('./bankroll-manager.js');
@@ -383,101 +384,104 @@ fs.writeFileSync(path.join(__dirname, 'ts_results.json'), JSON.stringify(results
 console.log('TS_RUNS=' + results.length);
 """)
 
-subprocess.run(["node", node_runner], check=True)
-with open(os.path.join(OUT_DIR, "ts_results.json"), "r", encoding="utf-8") as f:
-    ts_results = {r["key"]: r for r in json.load(f)}
+    subprocess.run(["node", node_runner], check=True)
+    with open(os.path.join(OUT_DIR, "ts_results.json"), "r", encoding="utf-8") as f:
+        ts_results = {r["key"]: r for r in json.load(f)}
 
-mismatches = 0
-total_spins = 0
-inv_failures = 0
+    mismatches = 0
+    total_spins = 0
+    inv_failures = 0
 
-for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
-    is_fast = profile != "SHIELD_CONSERVATIVE"
-    for init_bank in [1_000_000, 2_000_000, 3_800_000, 6_500_000]:
-        for s_name, outs in sessions:
-            bank = init_bank; step = 1; cdt = 0; prev_bet = None
-            mode = "ZEBRA"; prev_mode = "ZEBRA"; sde = 999; sim = 0
-            seq_start = "ZEBRA"; seq_n = None; zero_in_seq = 0
-            hist = []; py_trace = []
-            for outcome in outs:
-                if bank < 1000: break
-                cycle_cap = bank + cdt
-                zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
-                is_zero_shock = is_fast and (zero10 >= 2 or zero_in_seq >= 2)
-                locked = cdt > 0 and is_fast and (not is_zero_shock) and cycle_cap >= 3_000_000 and seq_start == "ZEBRA"
-                eff_mode = "ZEBRA" if locked else mode
-                b0, mode_n = cfg_1m(profile, eff_mode, cycle_cap)
-                if cdt > 0 and seq_n is not None:
-                    if is_zero_shock and step >= 2:
-                        eff_n = min(10, max(seq_n, mode_n), mode_n)
+    for profile in ["APEX_IDEAL", "TURBO_HARVEST", "SHIELD_CONSERVATIVE"]:
+        is_fast = profile != "SHIELD_CONSERVATIVE"
+        for init_bank in [1_000_000, 2_000_000, 3_800_000, 6_500_000]:
+            for s_name, outs in sessions:
+                bank = init_bank; step = 1; cdt = 0; prev_bet = None
+                mode = "ZEBRA"; prev_mode = "ZEBRA"; sde = 999; sim = 0
+                seq_start = "ZEBRA"; seq_n = None; zero_in_seq = 0
+                hist = []; py_trace = []
+                for outcome in outs:
+                    if bank < 1000: break
+                    cycle_cap = bank + cdt
+                    zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
+                    is_zero_shock = is_fast and (zero10 >= 2 or zero_in_seq >= 2)
+                    locked = cdt > 0 and is_fast and (not is_zero_shock) and cycle_cap >= 3_000_000 and seq_start == "ZEBRA"
+                    eff_mode = "ZEBRA" if locked else mode
+                    b0, mode_n = cfg_1m(profile, eff_mode, cycle_cap)
+                    if cdt > 0 and seq_n is not None:
+                        if is_zero_shock and step >= 2:
+                            eff_n = min(10, max(seq_n, mode_n), mode_n)
+                        else:
+                            eff_n = min(mode_n, seq_n)
                     else:
-                        eff_n = min(mode_n, seq_n)
-                else:
-                    eff_n = mode_n
-                bet = exact_bet_1m(cdt, step, b0, eff_n, bank, prev_bet)
-                if bet < 1000 or bet > TABLE_LIMIT or bet > bank:
-                    inv_failures += 1
-                pred = predict_v15(hist, window=24)
-                was_at_start = (cdt == 0 or step == 1)
-                py_trace.append([bet, eff_mode, step, eff_n, b0])
+                        eff_n = mode_n
+                    bet = exact_bet_1m(cdt, step, b0, eff_n, bank, prev_bet)
+                    if bet < 1000 or bet > TABLE_LIMIT or bet > bank:
+                        inv_failures += 1
+                    pred = predict_v15(hist, window=24)
+                    was_at_start = (cdt == 0 or step == 1)
+                    py_trace.append([bet, eff_mode, step, eff_n, b0])
 
-                is_win = (outcome == pred and outcome != "ZERO")
-                if outcome == "ZERO":
-                    net = -bet; cdt += bet; step += 1; zero_in_seq += 1
-                elif outcome == pred:
-                    net = calc_net_win(bet)
-                    cdt = max(0, cdt - net)
-                    if cdt == 0: step = 1; zero_in_seq = 0
-                else:
-                    net = -bet; cdt += bet; step += 1
+                    is_win = (outcome == pred and outcome != "ZERO")
+                    if outcome == "ZERO":
+                        net = -bet; cdt += bet; step += 1; zero_in_seq += 1
+                    elif outcome == pred:
+                        net = calc_net_win(bet)
+                        cdt = max(0, cdt - net)
+                        if cdt == 0: step = 1; zero_in_seq = 0
+                    else:
+                        net = -bet; cdt += bet; step += 1
 
-                is_terminal = not is_win and BankrollManagerMirror.is_terminal_sequence_loss(step - 1, seq_n, bet, TABLE_LIMIT)
-                if is_terminal:
-                    cdt = 0
-                    step = 1
-                    zero_in_seq = 0
-                bank += net
-                hist.append(outcome)
+                    is_terminal = not is_win and BankrollManagerMirror.is_terminal_sequence_loss(step - 1, seq_n, bet, TABLE_LIMIT)
+                    if is_terminal:
+                        cdt = 0
+                        step = 1
+                        zero_in_seq = 0
+                    bank += net
+                    hist.append(outcome)
 
-                if is_fast:
-                    raw_m = PrngDetectorMirror.detect_mode(hist)
-                    zero10_next = sum(1 for x in hist[-10:] if x == "ZERO")
-                    nm = "TRANSITION" if (zero10_next >= 3 and raw_m == "ZEBRA") else raw_m
-                    prev_mode = mode if nm != mode else prev_mode
-                    sim = 1 if nm != mode else sim + 1
-                    mode = nm; sde = 999
-                else:
-                    mode, prev_mode, sde, sim = PrngDetectorMirror.detect_mode_with_hysteresis(hist, prev_mode, mode, sde, sim)
+                    if is_fast:
+                        raw_m = PrngDetectorMirror.detect_mode(hist)
+                        zero10_next = sum(1 for x in hist[-10:] if x == "ZERO")
+                        nm = "TRANSITION" if (zero10_next >= 3 and raw_m == "ZEBRA") else raw_m
+                        prev_mode = mode if nm != mode else prev_mode
+                        sim = 1 if nm != mode else sim + 1
+                        mode = nm; sde = 999
+                    else:
+                        mode, prev_mode, sde, sim = PrngDetectorMirror.detect_mode_with_hysteresis(hist, prev_mode, mode, sde, sim)
 
-                if cdt == 0:
-                    seq_start = mode; seq_n = None; zero_in_seq = 0
-                elif was_at_start:
-                    seq_start = eff_mode
-                    seq_n = cfg_1m(profile, eff_mode, cycle_cap)[1]
-                else:
-                    next_zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
-                    next_zero_shock = is_fast and (next_zero10 >= 2 or zero_in_seq >= 2)
-                    if next_zero_shock and step >= 2:
-                        next_locked = is_fast and (not True) and (bank + cdt >= 3_000_000) and seq_start == "ZEBRA"
-                        next_mode_n = cfg_1m(profile, "ZEBRA" if next_locked else mode, bank + cdt)[1]
-                        seq_n = min(10, max(seq_n if seq_n is not None else next_mode_n, next_mode_n))
-                prev_bet = bet
+                    if cdt == 0:
+                        seq_start = mode; seq_n = None; zero_in_seq = 0
+                    elif was_at_start:
+                        seq_start = eff_mode
+                        seq_n = cfg_1m(profile, eff_mode, cycle_cap)[1]
+                    else:
+                        next_zero10 = sum(1 for x in hist[-10:] if x == "ZERO")
+                        next_zero_shock = is_fast and (next_zero10 >= 2 or zero_in_seq >= 2)
+                        if next_zero_shock and step >= 2:
+                            next_locked = is_fast and (not True) and (bank + cdt >= 3_000_000) and seq_start == "ZEBRA"
+                            next_mode_n = cfg_1m(profile, "ZEBRA" if next_locked else mode, bank + cdt)[1]
+                            seq_n = min(10, max(seq_n if seq_n is not None else next_mode_n, next_mode_n))
+                    prev_bet = bet
 
-            key = f"{profile}|{init_bank}|{s_name}"
-            ts_rec = ts_results[key]
-            total_spins += len(py_trace)
-            if ts_rec["bank"] != bank or ts_rec["trace"] != py_trace:
-                mismatches += 1
-                if mismatches <= 3:
-                    print("MISMATCH:", key, "PY_BANK=", bank, "TS_BANK=", ts_rec["bank"])
-                    for i in range(min(len(py_trace), len(ts_rec["trace"]))):
-                        if py_trace[i] != ts_rec["trace"][i]:
-                            print(f"  First mismatch at spin {i+1}:")
-                            print(f"    PY: {py_trace[i]}")
-                            print(f"    TS: {ts_rec['trace'][i]}")
-                            break
+                key = f"{profile}|{init_bank}|{s_name}"
+                ts_rec = ts_results[key]
+                total_spins += len(py_trace)
+                if ts_rec["bank"] != bank or ts_rec["trace"] != py_trace:
+                    mismatches += 1
+                    if mismatches <= 3:
+                        print("MISMATCH:", key, "PY_BANK=", bank, "TS_BANK=", ts_rec["bank"])
+                        for i in range(min(len(py_trace), len(ts_rec["trace"]))):
+                            if py_trace[i] != ts_rec["trace"][i]:
+                                print(f"  First mismatch at spin {i+1}:")
+                                print(f"    PY: {py_trace[i]}")
+                                print(f"    TS: {ts_rec['trace'][i]}")
+                                break
 
-if __name__ == "__main__":
     print(f"PARITY CHECK v15.0 FINAL APEX (W=24 + SAT_AWARE_ALPHA + DEEP_FADE + ZERO_SHOCK): runs={len(ts_results)}, total_spins={total_spins:,}, mismatches={mismatches}, inv_failures={inv_failures}")
     if mismatches > 0 or inv_failures > 0:
         sys.exit(1)
+
+if __name__ == "__main__":
+    run_parity_check()
+

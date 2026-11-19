@@ -219,8 +219,17 @@ class PrngDetectorMirror:
     @classmethod
     def extract_features(cls, history):
         """
-        v16.0 APEX-Neural Feature Extractor: extracts 30 causal time-series features.
+        v16.1 APEX-Neural Feature Extractor: extracts 30 causal time-series features.
         Zero data leakage: strictly uses past spins up to t-1.
+        Features:
+        1-3: Micro-memory (lags 1, 2, 3)
+        4-9: Current streak dynamics (signed, abs, s=1, s=2, s=3, s>=4)
+        10-13: Previous opposite streak memory (prev_s, prev_s=1, prev_s=2, prev_s>=3)
+        14-17: Rolling streak mood & saturation ratio (avg_r, avg_b, diff, s/avg_cur)
+        18-22: Multi-scale alternation rates (w=4, 6, 8, 12, 16)
+        23-25: Color dominance ratios (w=8, 16, 24)
+        26-28: Empirical Bayesian transition trackers (pair_cont, s3_break, alt_diff)
+        29-30: Micro-patterns (A-B-A, A-A-B)
         """
         if not history or len(history) < 4:
             return None
@@ -231,15 +240,16 @@ class PrngDetectorMirror:
 
         feats = []
 
-        # 1. Recent raw outcomes (last 8 non-zero spins: RED=+1, BLACK=-1)
-        for k in range(1, 9):
+        # 1. Micro-memory: Lags 1, 2, 3 (3 features)
+        for k in range(1, 4):
             if len(nz) >= k:
                 feats.append(1.0 if nz[-k] == 'RED' else -1.0)
             else:
                 feats.append(0.0)
 
-        # 2. Streak features
+        # 2. Current streak features (6 features)
         cur_color = nz[-1]
+        opp_color = 'BLACK' if cur_color == 'RED' else 'RED'
         streak = 1
         for k in range(len(nz) - 2, -1, -1):
             if nz[k] == cur_color:
@@ -254,7 +264,47 @@ class PrngDetectorMirror:
         feats.append(1.0 if streak == 3 else 0.0)
         feats.append(1.0 if streak >= 4 else 0.0)
 
-        # 3. Alternation frequencies (w = 4, 6, 8, 12, 16)
+        # 3. Previous streak features (4 features)
+        prev_streak = 1
+        idx_prev = len(nz) - 1 - streak
+        if idx_prev >= 0:
+            for k in range(idx_prev - 1, -1, -1):
+                if nz[k] == opp_color:
+                    prev_streak += 1
+                else:
+                    break
+        feats.append(float(min(prev_streak, 6)))
+        feats.append(1.0 if prev_streak == 1 else 0.0)
+        feats.append(1.0 if prev_streak == 2 else 0.0)
+        feats.append(1.0 if prev_streak >= 3 else 0.0)
+
+        # 4. Rolling average streak per color & saturation ratio (Window 24) (4 features)
+        w24 = nz[-24:]
+        st_r, st_b = [], []
+        if w24:
+            tc = w24[0]
+            tl = 1
+            for j in range(1, len(w24)):
+                if w24[j] == tc:
+                    tl += 1
+                else:
+                    if tc == 'RED': st_r.append(tl)
+                    else: st_b.append(tl)
+                    tc = w24[j]
+                    tl = 1
+            if tc == 'RED': st_r.append(tl)
+            else: st_b.append(tl)
+        avg_r = sum(st_r) / len(st_r) if st_r else 1.8
+        avg_b = sum(st_b) / len(st_b) if st_b else 1.8
+        feats.append(avg_r)
+        feats.append(avg_b)
+        feats.append(avg_r - avg_b)
+
+        avg_cur = avg_r if cur_color == 'RED' else avg_b
+        sat_ratio = streak / max(1.0, avg_cur)
+        feats.append(sat_ratio)
+
+        # 5. Multi-scale alternation rates (w = 4, 6, 8, 12, 16) (5 features)
         for w in [4, 6, 8, 12, 16]:
             sub = nz[-w:]
             if len(sub) >= 2:
@@ -263,7 +313,7 @@ class PrngDetectorMirror:
             else:
                 feats.append(0.5)
 
-        # 4. Color ratios (w = 8, 16, 24)
+        # 6. Color ratios (w = 8, 16, 24) (3 features)
         for w in [8, 16, 24]:
             sub = nz[-w:]
             if len(sub) > 0:
@@ -272,20 +322,7 @@ class PrngDetectorMirror:
             else:
                 feats.append(0.5)
 
-        # 5. ZERO clustering
-        z10 = sum(1 for x in raw[-10:] if x == 'ZERO')
-        z25 = sum(1 for x in raw[-25:] if x == 'ZERO')
-        feats.append(float(z10))
-        feats.append(float(z25))
-
-        spins_since_zero = 0
-        for k in range(len(raw) - 1, -1, -1):
-            if raw[k] == 'ZERO':
-                break
-            spins_since_zero += 1
-        feats.append(float(min(spins_since_zero, 30)))
-
-        # 6. Empirical Bayesian session transition trackers
+        # 7. Empirical Bayesian session transition trackers (3 features)
         pair_cont = 1
         pair_break = 1
         s3_cont = 1
@@ -322,7 +359,7 @@ class PrngDetectorMirror:
         feats.append(s3_break / (s3_cont + s3_break))
         feats.append(alt_diff / (alt_same + alt_diff))
 
-        # 7. Micro-patterns (A-B-A and A-A-B)
+        # 8. Micro-patterns (A-B-A and A-A-B) (2 features)
         feats.append(1.0 if (len(nz) >= 3 and nz[-1] == nz[-3] and nz[-1] != nz[-2]) else 0.0)
         feats.append(1.0 if (len(nz) >= 3 and nz[-2] == nz[-3] and nz[-1] != nz[-2]) else 0.0)
 
@@ -373,7 +410,7 @@ class PrngDetectorMirror:
     @classmethod
     def get_recommendation_and_confidence(cls, history):
         """
-        v16.0 APEX-Neural Predictor (Deep Neural Network + Bayesian Gated Fallback)
+        v16.1 APEX-Neural Predictor (Deep Neural Network + Dynamic Mood & Streak Gating)
         100.000% parity with lib/engine/prng-detector.ts.
         """
         if not history:
@@ -385,18 +422,90 @@ class PrngDetectorMirror:
             rec = non_zero[-1] if non_zero else 'RED'
             return rec, 50, 'АНАЛИЗ'
 
-        # --- v16.0 APEX-Neural Evaluation ---
+        cur_color = non_zero[-1]
+        opp_color = 'BLACK' if cur_color == 'RED' else 'RED'
+
+        # 1. Calculate current streak and previous opposite streak
+        streak = 1
+        for k in range(len(non_zero) - 2, -1, -1):
+            if non_zero[k] == cur_color:
+                streak += 1
+            else:
+                break
+
+        prev_streak = 1
+        idx_prev = len(non_zero) - 1 - streak
+        if idx_prev >= 0:
+            for k in range(idx_prev - 1, -1, -1):
+                if non_zero[k] == opp_color:
+                    prev_streak += 1
+                else:
+                    break
+
+        # 2. Calculate rolling average streak length for cur_color (Window 24)
+        w24 = non_zero[-24:]
+        st = []
+        if w24:
+            tc = w24[0]
+            tl = 1
+            for j in range(1, len(w24)):
+                if w24[j] == tc:
+                    tl += 1
+                else:
+                    if tc == cur_color:
+                        st.append(tl)
+                    tc = w24[j]
+                    tl = 1
+            if tc == cur_color:
+                st.append(tl)
+        avg_cur = sum(st) / len(st) if st else 1.8
+        sat_ratio = streak / max(1.0, avg_cur)
+
+        # 3. Fast alternation rate (Window 4)
+        sub4 = non_zero[-4:]
+        fast_alt = 0.5
+        if len(sub4) >= 2:
+            trans = sum(1 for i in range(1, len(sub4)) if sub4[i] != sub4[i - 1])
+            fast_alt = trans / (len(sub4) - 1)
+
+        # 4. v16.1 APEX-Neural Forward Pass
+        p_red = 0.5
         feats = cls.extract_features(history)
         if feats is not None:
             p_red = cls.forward_neural(feats)
-            theta = NEURAL_WEIGHTS_V16.get('theta', 0.06)
-            if abs(p_red - 0.5) >= theta:
-                if p_red >= 0.5:
-                    conf = max(50, min(85, int(round(p_red * 100))))
-                    return 'RED', conf, 'НЕЙРОСЕТЬ APEX-16'
-                else:
-                    conf = max(50, min(85, int(round((1.0 - p_red) * 100))))
-                    return 'BLACK', conf, 'НЕЙРОСЕТЬ APEX-16'
+
+        # --- Dynamic Streak & Mood Gating Laws ---
+
+        # Law A. Couplet Break Law:
+        if streak == 2 and prev_streak == 2:
+            if cur_color == 'RED' and p_red < 0.68:
+                return 'BLACK', 66, 'НЕЙРО-КУПЛЕТ'
+            elif cur_color == 'BLACK' and p_red > 0.32:
+                return 'RED', 66, 'НЕЙРО-КУПЛЕТ'
+
+        # Law B. Streak Saturation Law:
+        if streak >= 2 and sat_ratio >= 1.0:
+            if cur_color == 'RED' and p_red < 0.65:
+                return 'BLACK', 64, 'НАСЫЩЕНИЕ СЕРИИ'
+            elif cur_color == 'BLACK' and p_red > 0.35:
+                return 'RED', 64, 'НАСЫЩЕНИЕ СЕРИИ'
+
+        # Law C. Streak Young / Continuation Law:
+        if streak == 1 and sat_ratio < 0.60 and fast_alt < 0.70:
+            if cur_color == 'RED' and p_red >= 0.42:
+                return 'RED', 60, 'УДЕРЖАНИЕ СЕРИИ'
+            elif cur_color == 'BLACK' and p_red <= 0.58:
+                return 'BLACK', 60, 'УДЕРЖАНИЕ СЕРИИ'
+
+        # Law D. Standard Neural Recommendation
+        theta = NEURAL_WEIGHTS_V16.get('theta', 0.06)
+        if abs(p_red - 0.5) >= theta:
+            if p_red >= 0.5:
+                conf = max(50, min(85, int(round(p_red * 100))))
+                return 'RED', conf, 'НЕЙРОСЕТЬ APEX-16'
+            else:
+                conf = max(50, min(85, int(round((1.0 - p_red) * 100))))
+                return 'BLACK', conf, 'НЕЙРОСЕТЬ APEX-16'
 
         # --- Fallback: v15.2 Synthesized Optimal Predictor ---
         streak = cls.calc_current_streak(non_zero)
