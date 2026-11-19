@@ -27,6 +27,7 @@ from .adb_controller import ADBController
 from .vision_engine import VisionEngine
 from .session_logger import SessionLogger
 from .apex_engine import ApexEngineClient
+from .afk_controller import AFKController
 
 class CasinoBot:
     def __init__(
@@ -76,6 +77,16 @@ class CasinoBot:
         self.current_state = "IDLE"
         self.current_bet_in_field: Optional[int] = None
         self.last_payday_check_time: float = 0.0
+
+        # Graceful debt-free stop & AFK automation
+        self.graceful_stop_requested = False
+        self.graceful_stop_reason: Optional[str] = None
+        self.afk = AFKController(
+            target_timestamp=config.afk_target_timestamp,
+            sleep_pc_on_stop=config.sleep_pc_on_stop
+        )
+        if config.afk_duration_str:
+            self.afk.set_timer(config.afk_duration_str, sleep_pc=config.sleep_pc_on_stop)
 
     def _calc_net_win(self, bet: int) -> int:
         """Calculates net win with 2% server tax: round(bet * 98 / 100)."""
@@ -127,6 +138,10 @@ class CasinoBot:
             "last_event": self.last_event,
             "stop_reason": self.stop_reason,
             "uptime_sec": int(time.time() - self.start_time),
+            "graceful_stop_requested": self.graceful_stop_requested,
+            "afk_active": self.afk.is_active,
+            "afk_remaining": self.afk.format_remaining(),
+            "sleep_pc": self.afk.sleep_pc_on_stop,
             "detailed_stats": self.stats
         }
         if extra:
@@ -497,6 +512,27 @@ class CasinoBot:
                                 self.is_running = False
                                 break
 
+                            # Check 3.1: AFK Timer Expiration Check
+                            if self.afk.is_active and self.afk.is_expired() and not self.graceful_stop_requested:
+                                self.afk.has_triggered_stop = True
+                                reason = f"Таймер АФК истёк ({self.afk.format_target_clock()})"
+                                self._log(f"\n[ТАЙМЕР АФК] Заданное время работы истекло! Запуск безопасной остановки (доигрываем серию)...")
+                                self.request_graceful_stop(reason)
+
+                            # Check 3.2: Graceful Stop Check (Wait until debt cdt == 0 and step == 1)
+                            if self.graceful_stop_requested:
+                                if self.cdt == 0 and self.current_step == 1:
+                                    self.stop_reason = self.graceful_stop_reason or "Безопасная остановка (серия закрыта в 0 ₽)"
+                                    self.last_event = f"[БЕЗОПАСНАЯ ОСТАНОВКА] Серия успешно закрыта без долгов (CDT=0). Баланс: {self.bankroll:,.0f} ₽. Игра завершена."
+                                    self._log(f"\n[OK] {self.last_event}")
+                                    self._emit_status("STOPPED", {"msg": self.last_event, "stop_reason": self.stop_reason})
+                                    self.is_running = False
+                                    break
+                                else:
+                                    self.last_event = f"[БЕЗОПАСНАЯ ОСТАНОВКА] Доигрываем серию: Шаг {self.current_step}, Долг {self.cdt:,.0f} ₽..."
+                                    self._log(f"[*] {self.last_event}")
+                                    self._emit_status("FINISHING_SERIES", {"msg": self.last_event})
+
                             # Check 4: User Pause
                             while self.is_paused and self.is_running:
                                 self.last_event = "Сессия на паузе (PAUSED)"
@@ -600,9 +636,43 @@ class CasinoBot:
         self._log(f"==========================================\n")
         self._emit_status("STOPPED", {"summary": summary, "msg": self.last_event, "stop_reason": self.stop_reason})
 
-    def stop(self):
-        """Signals the bot to stop cleanly after current spin."""
-        self.is_running = False
-        self.last_event = "Остановка по запросу пользователя..."
-        if hasattr(self, 'engine') and self.engine:
-            self.engine.close()
+        # AFK PC Sleep transition
+        if self.afk.sleep_pc_on_stop and not self.silent:
+            self._log("\n[AFK] Сессия завершена. Запуск перехода ПК в спящий режим...")
+            self.afk.execute_pc_sleep(countdown_sec=15)
+
+    def request_graceful_stop(self, reason: str = "Запрос пользователя"):
+        """
+        Requests a safe, debt-free shutdown:
+        If currently on step > 1 or with debt (cdt > 0), the bot continues playing to finish
+        the current series, recovering debt or taking a terminal reset, and ONLY halts when step == 1 and cdt == 0.
+        If already at step 1 with 0 debt, halts immediately.
+        """
+        self.graceful_stop_requested = True
+        self.graceful_stop_reason = reason
+        if self.cdt == 0 and self.current_step == 1:
+            self.stop_reason = f"Безопасная остановка ({reason})"
+            self.last_event = f"[БЕЗОПАСНАЯ ОСТАНОВКА] Долгов нет (CDT=0). Немедленное завершение сессии ({reason})."
+            self._log(f"\n[OK] {self.last_event}")
+            self.is_running = False
+            if hasattr(self, 'engine') and self.engine:
+                self.engine.close()
+        else:
+            self.last_event = f"[БЕЗОПАСНАЯ ОСТАНОВКА АКТИВНА] Ожидание закрытия серии: Шаг {self.current_step}, Долг {self.cdt:,.0f} ₽..."
+            self._log(f"\n[ВНИМАНИЕ] {self.last_event}")
+            self._emit_status("FINISHING_SERIES", {"msg": self.last_event})
+
+    def stop(self, force: bool = False, reason: str = "Остановка по запросу пользователя"):
+        """
+        Stops the bot.
+        By default (force=False), performs a GRACEFUL shutdown (waits for current series to complete without debt).
+        If force=True, halts immediately.
+        """
+        if force:
+            self.is_running = False
+            self.stop_reason = f"Принудительная экстренная остановка ({reason})"
+            self.last_event = "Экстренная остановка!"
+            if hasattr(self, 'engine') and self.engine:
+                self.engine.close()
+        else:
+            self.request_graceful_stop(reason)

@@ -38,8 +38,11 @@ class AccountWorker:
         self.thread = threading.Thread(target=self.bot.run, daemon=True)
         self.thread.start()
 
-    def stop(self):
-        self.bot.stop()
+    def request_graceful_stop(self, reason: str = "Запрос оператора"):
+        self.bot.request_graceful_stop(reason)
+
+    def stop(self, force: bool = False, reason: str = "Запрос оператора"):
+        self.bot.stop(force=force, reason=reason)
 
 class FarmOrchestrator:
     def __init__(self):
@@ -72,10 +75,11 @@ class FarmOrchestrator:
             print(f"[FARM] Starting Worker for {worker.serial}...")
             worker.start()
 
-    def stop_all(self):
+    def stop_all(self, force: bool = False):
+        mode_name = "Экстренная остановка" if force else "Безопасная остановка (доигрывание серий)"
         for port, worker in self.workers.items():
-            print(f"[FARM] Stopping Worker for {worker.serial}...")
-            worker.stop()
+            print(f"[FARM] {mode_name} воркера {worker.serial}...")
+            worker.stop(force=force)
 
     def print_farm_dashboard(self):
         """Prints live ASCII telemetry for all farm accounts."""

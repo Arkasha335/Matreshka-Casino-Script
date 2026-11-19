@@ -30,6 +30,7 @@ if project_root not in sys.path:
 from bot.config import BotConfig, StrategyProfile
 from bot.state_machine import CasinoBot
 from bot.mumu_manager import MuMuManagerCLI
+from bot.afk_controller import AFKController
 
 # Safe Windows keypress check
 try:
@@ -110,9 +111,19 @@ class ActiveBotInstance:
         self.telemetry["is_paused"] = False
         self.telemetry["state"] = "RUNNING"
 
-    def stop(self):
-        self.bot.stop()
-        self.telemetry["state"] = "STOPPED"
+    def request_graceful_stop(self, reason: str = "Запрос оператора"):
+        self.bot.request_graceful_stop(reason)
+        if self.bot.cdt == 0 and self.bot.current_step == 1:
+            self.telemetry["state"] = "STOPPED"
+        else:
+            self.telemetry["state"] = "FINISHING_SERIES"
+
+    def stop(self, force: bool = False, reason: str = "Запрос оператора"):
+        if force:
+            self.bot.stop(force=True, reason=reason)
+            self.telemetry["state"] = "STOPPED"
+        else:
+            self.request_graceful_stop(reason)
 
     def is_active(self) -> bool:
         return self.bot.is_running and not self.bot.is_paused
@@ -129,6 +140,7 @@ class MasterDashboard:
         self.last_status_msg = "Готов к работе. Выберите команду управления."
         self._cached_devices: Dict[str, Any] = {}
         self._last_devices_poll: float = 0.0
+        self.afk = AFKController()
 
     def get_detected_devices(self, force: bool = False) -> Dict[str, Any]:
         """Queries MuMu Player CLI for instances with smart caching (10s TTL) to eliminate UI lag."""
@@ -266,14 +278,23 @@ class MasterDashboard:
                 if err:
                     print(f"     [!] ОШИБКА В ПОТОКЕ: {err.splitlines()[-1] if err.splitlines() else err}")
 
+        # Top AFK Status bar if active
+        if self.afk.is_active:
+            rem = self.afk.format_remaining()
+            target = self.afk.format_target_clock()
+            sleep_txt = " | СОН ПК: ВКЛЮЧЕН 💤" if self.afk.sleep_pc_on_stop else ""
+            print(f" ⏳ АФК-ТАЙМЕР: Осталось {rem} (до {target}){sleep_txt}")
+            print("-" * 88)
+
         print("=" * 88)
         print(f" УВЕДОМЛЕНИЕ: {self.last_status_msg}")
         print("-" * 88)
         print(" КОМАНДЫ (нажмите соответствующую клавишу):")
         print("   [A] Запустить / Добавить бота на окно     [P] Пауза / Возобновить бота")
-        print("   [S] Остановить конкретного бота           [K] Остановить ВСЕХ ботов")
-        print("   [T] Тестовый спин (1000 ₽ на 1 спин)      [C] Калибратор координат")
-        print("   [M] Меню эмуляторов MuMu                  [Q] Завершить работу и выйти")
+        print("   [S] Безопасная остановка бота             [K] Безопасная остановка ВСЕХ")
+        print("   [Z] АФК-Таймер и Спящий режим ПК          [T] Тестовый спин (1000 ₽)")
+        print("   [M] Меню эмуляторов MuMu                  [C] Калибратор координат")
+        print("   [Q] Завершить работу и выйти")
         print("=" * 88)
 
     def action_add_bot(self):
@@ -420,7 +441,7 @@ class MasterDashboard:
                 self.last_status_msg = "Неверный ввод."
 
     def action_stop_bot(self):
-        """Stops a specific bot without stopping others."""
+        """Stops a specific bot cleanly (graceful series completion or force abort)."""
         if not self.active_bots:
             self.last_status_msg = "Нет запущенных ботов."
             return
@@ -429,7 +450,9 @@ class MasterDashboard:
         print("               ОСТАНОВКА КОНКРЕТНОГО БОТА")
         print("=" * 60)
         for idx, inst in sorted(self.active_bots.items()):
-            print(f"  [#{idx}] {inst.name} (Порт: {inst.port}) | Спинов: {inst.telemetry.get('spin', 0)}")
+            step = inst.telemetry.get('step', 1)
+            cdt = inst.telemetry.get('cdt', 0)
+            print(f"  [#{idx}] {inst.name} (Порт: {inst.port}) | Спинов: {inst.telemetry.get('spin', 0)} | Шаг {step}, Долг {cdt:,.0f} ₽")
 
         s_in = input("\nВведите номер бота (#) для остановки (или 'b' для отмены): ").strip()
         if s_in.lower() in ('b', 'back', 'отмена'):
@@ -439,21 +462,92 @@ class MasterDashboard:
             idx = int(s_in)
             if idx in self.active_bots:
                 inst = self.active_bots[idx]
-                inst.stop()
-                self.last_status_msg = f"Бот #{idx} '{inst.name}' остановлен. Отчет сохранен в bot/logs/."
+                print(f"\nРежим остановки для #{idx} '{inst.name}':")
+                print("  [1] БЕЗОПАСНАЯ ОСТАНОВКА - доиграть серию до CDT=0 [Рекомендуется]")
+                print("  [2] ЭКСТРЕННАЯ ОСТАНОВКА - немедленно прервать прямо сейчас")
+                mode_in = input("Выберите режим [1/2, по умолчанию 1]: ").strip()
+                if mode_in == "2":
+                    inst.stop(force=True, reason="Экстренная остановка оператором")
+                    self.last_status_msg = f"Бот #{idx} '{inst.name}' ЭКСТРЕННО остановлен."
+                else:
+                    inst.request_graceful_stop(reason="Безопасная остановка оператором")
+                    self.last_status_msg = f"Бот #{idx} '{inst.name}': безопасная остановка активна (доигрываем серию)..."
             else:
                 self.last_status_msg = f"Бот #{idx} не найден среди активных."
         except ValueError:
             self.last_status_msg = "Некорректный номер бота."
 
     def action_stop_all(self):
-        """Stops all active bots cleanly."""
+        """Stops all active bots cleanly with graceful completion choice."""
         if not self.active_bots:
             self.last_status_msg = "Нет активных ботов."
             return
-        for b in self.active_bots.values():
-            b.stop()
-        self.last_status_msg = "Все боты успешно остановлены. Сессии сохранены в bot/logs/."
+
+        print("\n" + "=" * 60)
+        print("               ОСТАНОВКА ВСЕХ БОТОВ ФЕРМЫ")
+        print("=" * 60)
+        print("  [1] БЕЗОПАСНАЯ ОСТАНОВКА ВСЕХ - каждый бот доиграет серию до CDT=0 [Рекомендуется]")
+        print("  [2] ЭКСТРЕННАЯ ОСТАНОВКА ВСЕХ - немедленно прервать всех ботов прямо сейчас")
+        mode_in = input("\nВыберите вариант [1/2, по умолчанию 1] (или 'b' для отмены): ").strip()
+        if mode_in in ('b', 'back', 'отмена'):
+            return
+
+        if mode_in == "2":
+            for b in self.active_bots.values():
+                b.stop(force=True, reason="Экстренная остановка всей фермы")
+            self.last_status_msg = "Все боты ЭКСТРЕННО остановлены прямо сейчас."
+        else:
+            for b in self.active_bots.values():
+                b.request_graceful_stop(reason="Безопасная остановка всей фермы")
+            self.last_status_msg = "Запущена БЕЗОПАСНАЯ остановка всех ботов (каждый доиграет серию до CDT=0)."
+
+    def action_afk_timer(self):
+        """Configures AFK timer and PC sleep for all farm bots."""
+        print("\n" + "=" * 60)
+        print("         НАСТРОЙКА АФК ТАЙМЕРА И СПЯЩЕГО РЕЖИМА ПК")
+        print("=" * 60)
+        status = f"Осталось {self.afk.format_remaining()} (до {self.afk.format_target_clock()})" if self.afk.is_active else "ОТКЛЮЧЕН"
+        sleep_st = "ВКЛЮЧЕН 💤" if self.afk.sleep_pc_on_stop else "ВЫКЛЮЧЕН"
+        print(f"  Текущий статус таймера: {status}")
+        print(f"  Спящий режим ПК:        {sleep_st}")
+        print("-" * 60)
+        print("  [1] Задать длительность работы (например: 2h, 90m, 45m)")
+        print("  [2] Задать точное время выключения (например: 04:30, 23:00)")
+        print("  [3] Переключить спящий режим ПК (Вкл / Выкл)")
+        print("  [4] Отключить таймер")
+        print("  [B] Назад в центр управления")
+        print("=" * 60)
+        choice = input("Выберите действие [1/2/3/4/B]: ").strip().lower()
+
+        if choice == "1":
+            spec = input("Введите длительность (например, 2h или 90m): ").strip()
+            if spec:
+                if self.afk.set_timer(spec, sleep_pc=self.afk.sleep_pc_on_stop):
+                    for b in self.active_bots.values():
+                        b.bot.afk.set_timer(spec, sleep_pc=self.afk.sleep_pc_on_stop)
+                    self.last_status_msg = f"Таймер установлен: {self.afk.format_remaining()} (до {self.afk.format_target_clock()})."
+                else:
+                    self.last_status_msg = "Некорректный формат длительности."
+        elif choice == "2":
+            clock_time = input("Введите время остановки (ЧЧ:ММ, например, 05:00): ").strip()
+            if clock_time:
+                if self.afk.set_timer(clock_time, sleep_pc=self.afk.sleep_pc_on_stop):
+                    for b in self.active_bots.values():
+                        b.bot.afk.set_timer(clock_time, sleep_pc=self.afk.sleep_pc_on_stop)
+                    self.last_status_msg = f"Остановка запланирована на {self.afk.format_target_clock()}."
+                else:
+                    self.last_status_msg = "Некорректный формат времени."
+        elif choice == "3":
+            self.afk.sleep_pc_on_stop = not self.afk.sleep_pc_on_stop
+            for b in self.active_bots.values():
+                b.bot.afk.sleep_pc_on_stop = self.afk.sleep_pc_on_stop
+            st_text = "ВКЛЮЧЕН" if self.afk.sleep_pc_on_stop else "ВЫКЛЮЧЕН"
+            self.last_status_msg = f"Спящий режим ПК после завершения сессий: {st_text}."
+        elif choice == "4":
+            self.afk.disable()
+            for b in self.active_bots.values():
+                b.bot.afk.disable()
+            self.last_status_msg = "АФК таймер отключен."
 
     def action_test_spin(self):
         """Performs 1 single test spin on a device."""
@@ -528,6 +622,8 @@ class MasterDashboard:
             self.action_stop_bot()
         elif cmd == 'k':
             self.action_stop_all()
+        elif cmd in ('z', 'я'):
+            self.action_afk_timer()
         elif cmd == 't':
             self.action_test_spin()
         elif cmd == 'c':
@@ -535,17 +631,65 @@ class MasterDashboard:
         elif cmd == 'm':
             self.action_mumu_menu()
         elif cmd in ('q', 'quit', 'exit', 'й'):
-            self.is_running = False
+            if self.active_bots and any(b.is_alive() for b in self.active_bots.values()):
+                print("\n" + "=" * 60)
+                print("            ВЫХОД ИЗ ПАНЕЛИ УПРАВЛЕНИЯ ФЕРМОЙ")
+                print("=" * 60)
+                print("  [1] БЕЗОПАСНАЯ ОСТАНОВКА ВСЕХ - доиграть серии до CDT=0 [Рекомендуется]")
+                print("  [2] ЭКСТРЕННЫЙ ВЫХОД - немедленно прервать всех ботов прямо сейчас")
+                print("  [3] Оставить ботов работать в фоне и закрыть панель")
+                print("  [B] Отмена (вернуться в панель)")
+                print("=" * 60)
+                q_in = input("Выберите вариант [1/2/3/B, по умолчанию 1]: ").strip().lower()
+                if q_in in ('b', 'back', 'отмена'):
+                    return
+                if q_in == "2":
+                    for b in self.active_bots.values():
+                        b.stop(force=True, reason="Экстренный выход оператора")
+                    self.is_running = False
+                elif q_in == "3":
+                    self.is_running = False
+                else: # Default: graceful stop
+                    for b in self.active_bots.values():
+                        b.request_graceful_stop(reason="Безопасная остановка при выходе")
+                    self.last_status_msg = "Запущена безопасная остановка всех ботов (доигрываем серии)..."
+                    print("\n[*] Запущена безопасная остановка. Серии будут доиграны без потери долга.")
+                    time.sleep(1.0)
+                    self.is_running = False
+            else:
+                self.is_running = False
 
     def run(self):
         """Main non-blocking interactive application loop."""
         def sig_handler(sig, frame):
+            print("\n[Ctrl+C] Запрос безопасного завершения фермы...")
+            for b in self.active_bots.values():
+                b.request_graceful_stop(reason="Ctrl+C в панели управления")
             self.is_running = False
 
         old_sig = signal.signal(signal.SIGINT, sig_handler)
 
         try:
             while self.is_running:
+                # 1. Global AFK Timer monitor
+                if self.afk.is_active and self.afk.is_expired() and not self.afk.has_triggered_stop:
+                    self.afk.has_triggered_stop = True
+                    self.last_status_msg = "[АФК ТАЙМЕР ИСТЁК]: Запущена безопасная остановка всех ботов..."
+                    for b in self.active_bots.values():
+                        b.request_graceful_stop(reason="Таймер АФК истёк")
+
+                # 2. Check if all bots have safely closed their series under AFK
+                if self.afk.has_triggered_stop and self.active_bots:
+                    all_stopped = all(b.telemetry.get("state") == "STOPPED" or not b.is_alive() for b in self.active_bots.values())
+                    if all_stopped:
+                        self.last_status_msg = "[АФК]: Все боты завершили серии без долгов!"
+                        if self.afk.sleep_pc_on_stop:
+                            self.render_screen()
+                            print("\n[AFK] Все сессии закрыты! Запуск перехода ПК в спящий режим...")
+                            self.afk.execute_pc_sleep(countdown_sec=15)
+                            self.is_running = False
+                            break
+
                 self.render_screen()
 
                 # Sleep in small slices, checking for user keystrokes non-blockingly
@@ -560,15 +704,13 @@ class MasterDashboard:
 
                 # Fallback if msvcrt is not available or stdin is interactive
                 if not HAS_MSVCRT and self.is_running:
-                    cmd = input("\nВведите команду [A/P/S/K/T/C/M/Q]: ")
+                    cmd = input("\nВведите команду [A/P/S/K/Z/T/C/M/Q]: ")
                     self.handle_command(cmd)
 
         finally:
-            print("\n[*] Завершаем работу ботов и сохраняем отчеты сессий...")
-            for idx, inst in self.active_bots.items():
-                inst.stop()
+            print("\n[*] Завершение работы панели управления...")
             time.sleep(0.5)
-            print("[+] Все отчеты сессий успешно сохранены в bot/logs/!")
+            print("[+] Все отчеты сессий сохранены в bot/logs/!")
             signal.signal(signal.SIGINT, old_sig)
 
 if __name__ == "__main__":

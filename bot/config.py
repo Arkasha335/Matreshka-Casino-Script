@@ -52,6 +52,11 @@ class BotConfig:
     post_spin_cooldown_sec: float = 0.04 # Minimal safety buffer before batched atomic betting
     watchdog_timeout_sec: float = 40.0 # Timeout for round completion
     
+    # AFK & Automation Timer settings
+    afk_duration_str: Optional[str] = None # e.g. "90m", "2h", "04:30"
+    afk_target_timestamp: Optional[float] = None # Target epoch timestamp
+    sleep_pc_on_stop: bool = False # Put PC into Sleep mode after graceful series completion
+    
     # Paths
     project_root: str = field(default_factory=lambda: os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     templates_dir: str = field(default_factory=lambda: os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates"))
