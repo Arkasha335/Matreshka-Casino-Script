@@ -332,7 +332,7 @@ class BankrollManager {
             : Math.max(baseBet, Math.round(baseBet * Math.pow(params.growthFactor, Math.max(0, step - 2))));
         if (rem === 1) {
             const cap = Math.min(limit, intWallet);
-            const finalTerminal = cdt < cap * 0.30 ? Math.min(minTbb, cap) : cap;
+            const finalTerminal = Math.min(minTbb, cap);
             return Math.max(types_1.GAME_RULES.MIN_BET, Math.min(cap, Math.floor(finalTerminal)));
         }
         const { growthFactor } = this.solveExactBudgetX(pb, rem, intWallet, limit);

@@ -368,49 +368,25 @@ class PrngDetectorMirror:
     @classmethod
     def forward_neural(cls, feats):
         """
-        Pure forward inference pass through 24-12 MLP Neural Network.
+        Pure forward inference pass through Ridge-Regularized 30-feature Linear Model.
         100.000% parity with lib/engine/prng-detector.ts.
         """
         mu = NEURAL_WEIGHTS_V16['scaler']['mean']
         scale = NEURAL_WEIGHTS_V16['scaler']['scale']
-        w1 = NEURAL_WEIGHTS_V16['weights']['w1']
-        b1 = NEURAL_WEIGHTS_V16['weights']['b1']
-        w2 = NEURAL_WEIGHTS_V16['weights']['w2']
-        b2 = NEURAL_WEIGHTS_V16['weights']['b2']
-        w3 = NEURAL_WEIGHTS_V16['weights']['w3']
-        b3 = NEURAL_WEIGHTS_V16['weights']['b3'][0]
+        w = NEURAL_WEIGHTS_V16['weights']['w']
+        b = NEURAL_WEIGHTS_V16['weights']['b']
 
-        # Standardize input features
-        z = [(feats[i] - mu[i]) / scale[i] for i in range(30)]
+        z = b
+        for i in range(30):
+            z += ((feats[i] - mu[i]) / scale[i]) * w[i]
 
-        # Layer 1: 30 -> 24, Tanh
-        h1 = []
-        for j in range(24):
-            val = b1[j]
-            for i in range(30):
-                val += z[i] * w1[i][j]
-            h1.append(math.tanh(val))
-
-        # Layer 2: 24 -> 12, Tanh
-        h2 = []
-        for k in range(12):
-            val = b2[k]
-            for j in range(24):
-                val += h1[j] * w2[j][k]
-            h2.append(math.tanh(val))
-
-        # Output layer: 12 -> 1, Sigmoid
-        out_val = b3
-        for k in range(12):
-            out_val += h2[k] * w3[k][0]
-
-        p_red = 1.0 / (1.0 + math.exp(-out_val))
+        p_red = 1.0 / (1.0 + math.exp(-z))
         return round(p_red * 1_000_000) / 1_000_000
 
     @classmethod
-    def get_recommendation_and_confidence(cls, history):
+    def get_recommendation_and_confidence(cls, history, current_step=1):
         """
-        v16.1 APEX-Neural Predictor (Deep Neural Network + Dynamic Mood & Streak Gating)
+        v16.2 APEX Synthesized Engine (Bayesian Transition Matrices + Deep Step Streak Shield + Regularized Causal Head)
         100.000% parity with lib/engine/prng-detector.ts.
         """
         if not history:
@@ -425,7 +401,7 @@ class PrngDetectorMirror:
         cur_color = non_zero[-1]
         opp_color = 'BLACK' if cur_color == 'RED' else 'RED'
 
-        # 1. Calculate current streak and previous opposite streak
+        # 1. Calculate active streak
         streak = 1
         for k in range(len(non_zero) - 2, -1, -1):
             if non_zero[k] == cur_color:
@@ -433,103 +409,39 @@ class PrngDetectorMirror:
             else:
                 break
 
-        prev_streak = 1
-        idx_prev = len(non_zero) - 1 - streak
-        if idx_prev >= 0:
-            for k in range(idx_prev - 1, -1, -1):
-                if non_zero[k] == opp_color:
-                    prev_streak += 1
-                else:
-                    break
+        # -------------------------------------------------------------------------
+        # SHIELD: DEEP STEP STREAK SHIELD (Step >= 5 Anti-Wipeout Law)
+        # -------------------------------------------------------------------------
+        if current_step >= 5 and streak >= 2:
+            return cur_color, 75, f'ЗАЩИТА СЕРИИ APEX-16.2 (Шаг {current_step})'
 
-        # 2. Calculate rolling average streak length for cur_color (Window 24)
+        # 2. Fast Alternation Rate (Window 6)
+        sub6 = non_zero[-6:]
+        alt6 = 0.5
+        if len(sub6) >= 2:
+            trans = sum(1 for i in range(1, len(sub6)) if sub6[i] != sub6[i-1])
+            alt6 = trans / (len(sub6) - 1)
+
+        # 3. Macro Dominance Skew (Window 24 - Half-Wheel APEX Horizon)
         w24 = non_zero[-24:]
-        st = []
-        if w24:
-            tc = w24[0]
-            tl = 1
-            for j in range(1, len(w24)):
-                if w24[j] == tc:
-                    tl += 1
-                else:
-                    if tc == cur_color:
-                        st.append(tl)
-                    tc = w24[j]
-                    tl = 1
-            if tc == cur_color:
-                st.append(tl)
-        avg_cur = sum(st) / len(st) if st else 1.8
-        sat_ratio = streak / max(1.0, avg_cur)
+        red_count24 = sum(1 for c in w24 if c == 'RED')
+        red_ratio24 = red_count24 / len(w24) if w24 else 0.5
+        macro_dom = 'RED' if red_ratio24 > 0.55 else ('BLACK' if red_ratio24 < 0.45 else None)
 
-        # 3. Fast alternation rate (Window 4)
-        sub4 = non_zero[-4:]
-        fast_alt = 0.5
-        if len(sub4) >= 2:
-            trans = sum(1 for i in range(1, len(sub4)) if sub4[i] != sub4[i - 1])
-            fast_alt = trans / (len(sub4) - 1)
-
-        # 4. v16.1 APEX-Neural Forward Pass
-        p_red = 0.5
-        feats = cls.extract_features(history)
-        if feats is not None:
-            p_red = cls.forward_neural(feats)
-
-        # --- Dynamic Streak & Mood Gating Laws ---
-
-        # Law A. Couplet Break Law:
-        if streak == 2 and prev_streak == 2:
-            if cur_color == 'RED' and p_red < 0.68:
-                return 'BLACK', 66, 'НЕЙРО-КУПЛЕТ'
-            elif cur_color == 'BLACK' and p_red > 0.32:
-                return 'RED', 66, 'НЕЙРО-КУПЛЕТ'
-
-        # Law B. Streak Saturation Law:
-        if streak >= 2 and sat_ratio >= 1.0:
-            if cur_color == 'RED' and p_red < 0.65:
-                return 'BLACK', 64, 'НАСЫЩЕНИЕ СЕРИИ'
-            elif cur_color == 'BLACK' and p_red > 0.35:
-                return 'RED', 64, 'НАСЫЩЕНИЕ СЕРИИ'
-
-        # Law C. Streak Young / Continuation Law:
-        if streak == 1 and sat_ratio < 0.60 and fast_alt < 0.70:
-            if cur_color == 'RED' and p_red >= 0.42:
-                return 'RED', 60, 'УДЕРЖАНИЕ СЕРИИ'
-            elif cur_color == 'BLACK' and p_red <= 0.58:
-                return 'BLACK', 60, 'УДЕРЖАНИЕ СЕРИИ'
-
-        # Law D. Standard Neural Recommendation
-        theta = NEURAL_WEIGHTS_V16.get('theta', 0.06)
-        if abs(p_red - 0.5) >= theta:
-            if p_red >= 0.5:
-                conf = max(50, min(85, int(round(p_red * 100))))
-                return 'RED', conf, 'НЕЙРОСЕТЬ APEX-16'
-            else:
-                conf = max(50, min(85, int(round((1.0 - p_red) * 100))))
-                return 'BLACK', conf, 'НЕЙРОСЕТЬ APEX-16'
-
-        # --- Fallback: v15.2 Synthesized Optimal Predictor ---
-        streak = cls.calc_current_streak(non_zero)
-        color = non_zero[-1]
-        opp_color = 'BLACK' if color == 'RED' else 'RED'
-
-        # 1. Scan non_zero to compute running max streak
+        # 4. Empirical Session Transition Trackers (Bayesian Dirichlet Prior)
+        pair_cont, pair_break = 1, 1
+        s3_cont, s3_break = 1, 1
+        alt_same, alt_diff = 1, 1
         max_streak = 1
-        cur_streak = 1
+        cstk = 1
+
         for i in range(1, len(non_zero)):
             if non_zero[i] == non_zero[i - 1]:
-                cur_streak += 1
-                if cur_streak > max_streak:
-                    max_streak = cur_streak
+                cstk += 1
+                if cstk > max_streak:
+                    max_streak = cstk
             else:
-                cur_streak = 1
-
-        # 2. Count empirical transitions
-        pair_cont = 1
-        pair_break = 1
-        s3_cont = 1
-        s3_break = 1
-        alt_same = 1
-        alt_diff = 1
+                cstk = 1
 
         for i in range(2, len(non_zero)):
             ps = 1
@@ -539,58 +451,70 @@ class PrngDetectorMirror:
                     ps += 1
                 else:
                     break
-
-            actual = non_zero[i]
+            act = non_zero[i]
             if ps == 2 and (i < 3 or non_zero[i - 3] != pc):
-                if actual == pc:
+                if act == pc:
                     pair_cont += 1
                 else:
                     pair_break += 1
             elif ps >= 3:
-                if actual == pc:
+                if act == pc:
                     s3_cont += 1
                 else:
                     s3_break += 1
             elif ps == 1:
-                if actual == non_zero[i - 1]:
+                if act == non_zero[i - 1]:
                     alt_same += 1
                 else:
                     alt_diff += 1
 
-        # 3. Deep streak fading (streak >= 3)
+        # 5. Regularized Causal Feature Forward Pass
+        p_red = 0.5
+        feats = cls.extract_features(history)
+        if feats:
+            p_red = cls.forward_neural(feats)
+
+        # REGIME 1: Deep Streak (streak >= 3)
         if streak >= 3:
             s3_break_rate = s3_break / (s3_cont + s3_break)
-            if streak < max_streak * 0.7 and s3_break_rate < 0.50:
-                return color, 52, 'СЕРИЯ (ИМПУЛЬС)'
-            conf = max(50, min(75, int(round(50 + max(0, s3_break_rate - 0.48) * 60))))
-            return opp_color, conf, 'ОТСКОК ОТ ПОТОЛКА'
+            if streak < max_streak * 0.7 and s3_break_rate < 0.46:
+                return cur_color, 55, 'СЕРИЯ (ИМПУЛЬС-16.2)'
+            conf = max(50, min(80, js_round(50 + max(0, s3_break_rate - 0.48) * 60)))
+            return opp_color, conf, 'ОТСКОК ОТ ПОТОЛКА (16.2)'
 
-        # 4. Pairs (streak == 2)
+        # REGIME 2: Pairs (streak == 2)
         if streak == 2:
             pair_cont_rate = pair_cont / (pair_cont + pair_break)
-            if pair_cont_rate > 0.52:
-                conf = max(50, min(65, int(round(50 + (pair_cont_rate - 0.5) * 40))))
-                return color, conf, 'ПАРА (ПРОДОЛЖЕНИЕ)'
-            elif pair_cont_rate < 0.48:
-                conf = max(50, min(65, int(round(50 + (0.5 - pair_cont_rate) * 40))))
+            if pair_cont_rate > 0.51:
+                conf = max(50, min(65, js_round(50 + (pair_cont_rate - 0.5) * 40)))
+                return cur_color, conf, 'ПАРА (РАЗГОН ДО 3)'
+            elif pair_cont_rate < 0.47:
+                conf = max(50, min(65, js_round(50 + (0.5 - pair_cont_rate) * 40)))
                 return opp_color, conf, 'ПАРА (СЛОМ)'
-            return color, 51, 'ПАРА (СТРАХОВКА)'
+            if p_red > 0.54:
+                return 'RED', js_round(p_red * 100), 'ПАРА (НЕЙРО-КАЛИБРОВКА)'
+            elif p_red < 0.46:
+                return 'BLACK', js_round((1.0 - p_red) * 100), 'ПАРА (НЕЙРО-КАЛИБРОВКА)'
+            if macro_dom is not None:
+                return macro_dom, 52, 'ПАРА (МАКРО-ВЫРАВНИВАНИЕ)'
+            return cur_color, 51, 'ПАРА (СТРАХОВКА)'
 
-        # 5. Alternation (streak == 1)
-        alt_diff_rate = alt_diff / (alt_same + alt_diff)
-        w8 = non_zero[-8:]
-        alt8 = cls.calc_alternation(w8)
-
-        if alt8 >= 0.7:
-            return opp_color, 55, 'ЧЕРЕДОВАНИЕ (СЛОМ)'
-        elif alt8 <= 0.3:
-            return color, 54, 'ЧЕРЕДОВАНИЕ (ИМПУЛЬС)'
+        # REGIME 3: Alternation / Singles (streak == 1)
+        if alt6 >= 0.65:
+            return opp_color, 60, 'ЗЕБРА (ПРОДОЛЖЕНИЕ-16.2)'
+        elif alt6 <= 0.30:
+            return cur_color, 55, 'ТРЕНД (СТАРТ ПАРЫ-16.2)'
         else:
+            alt_diff_rate = alt_diff / (alt_same + alt_diff)
             if alt_diff_rate > 0.52:
-                return opp_color, 52, 'ЧЕРЕДОВАНИЕ (СЛОМ-АДАПТИВ)'
+                return opp_color, 53, 'ЗЕБРА (БАЙЕС-СЛОМ)'
             elif alt_diff_rate < 0.48:
-                return color, 52, 'ЧЕРЕДОВАНИЕ (ПРОДОЛЖЕНИЕ-АДАПТИВ)'
-            return opp_color, 51, 'ЧЕРЕДОВАНИЕ (БАЛАНС)'
+                return cur_color, 53, 'ТРЕНД (БАЙЕС-ПАРА)'
+            if p_red > 0.54:
+                return 'RED', js_round(p_red * 100), 'НЕЙРО-БАЛАНС'
+            elif p_red < 0.46:
+                return 'BLACK', js_round((1.0 - p_red) * 100), 'НЕЙРО-БАЛАНС'
+            return opp_color, 51, 'ЗЕБРА (БАЛАНС)'
 
 
 class BankrollManagerMirror:
@@ -661,7 +585,8 @@ class BankrollManagerMirror:
         remaining = max(1, target_steps - step + 1)
 
         if remaining == 1:
-            return min(terminal_cap, bankroll)
+            min_tbb = math.ceil((cdt + base_bet) / GAME_RULES['WIN_NET_RATIO'])
+            return max(GAME_RULES['MIN_BET'], min(terminal_cap, min_tbb, bankroll))
 
         if prev_bet is not None and prev_bet > 0:
             prev_b = prev_bet

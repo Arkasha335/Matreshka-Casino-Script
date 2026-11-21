@@ -9,28 +9,22 @@ with open(json_path, "r", encoding="utf-8") as f:
     model = json.load(f)
 
 ts_content = f"""/**
- * v16.0 APEX-Neural Trained Model Weights & Normalization Parameters.
- * Automatically exported from scikit-learn MLPClassifier (24-12 Tanh).
+ * v16.2 APEX-Neural Trained Model Weights & Normalization Parameters.
+ * Automatically exported from Ridge-Regularized Logistic Head (30 Causal Features).
  * 100.000% Bitwise Parity with Python engine mirror.
  */
 
 export interface NeuralWeightsV16 {{
   version: string;
-  input_dim: number;
-  hidden_layers: number[];
-  activation: string;
+  timestamp: string;
   theta: number;
   scaler: {{
     mean: number[];
     scale: number[];
   }};
   weights: {{
-    w1: number[][];
-    b1: number[];
-    w2: number[][];
-    b2: number[];
-    w3: number[][];
-    b3: number[];
+    w: number[];
+    b: number;
   }};
 }}
 

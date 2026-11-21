@@ -71,8 +71,8 @@ rl.on('line', (line) => {
                 prevBetAmount
             );
 
-            // 5. Prediction (v15.0 MPD + 24-spin rolling Half-Wheel Local Skew)
-            const prediction = PrngDetector.getRecommendationAndConfidence(history);
+            // 5. Prediction (v16.2 APEX Synthesized Engine)
+            const prediction = PrngDetector.getRecommendationAndConfidence(history, step);
 
             console.log(JSON.stringify({
                 bet: nextCalculatedBet,

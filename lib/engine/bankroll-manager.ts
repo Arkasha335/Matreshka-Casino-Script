@@ -410,7 +410,7 @@ export class BankrollManager {
 
     if (rem === 1) {
       const cap = Math.min(limit, intWallet);
-      const finalTerminal = cdt < cap * 0.30 ? Math.min(minTbb, cap) : cap;
+      const finalTerminal = Math.min(minTbb, cap);
       return Math.max(GAME_RULES.MIN_BET, Math.min(cap, Math.floor(finalTerminal)));
     }
 
